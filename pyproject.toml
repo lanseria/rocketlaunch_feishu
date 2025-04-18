@@ -26,6 +26,8 @@ dependencies = [
   "typer>=0.9.0",
   "rich>=13.0.0",
   "python-dotenv>=1.1.0",
+  "beautifulsoup4>=4.13.4",
+  "lark-oapi>=1.4.13",
 ]
 
 [project.optional-dependencies]

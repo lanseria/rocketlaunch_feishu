@@ -26,6 +26,10 @@ pip install -e .
 
 ```bash
 cli hello [name]
+cli parse-html ./data/html/1.html # for test
+cli read-latest-json
+cli bitable-list
+cli bitable-import-after 1717851480
 ```
 
 ## Development
