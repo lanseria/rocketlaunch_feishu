@@ -38,4 +38,5 @@ tiles/
 output_videos/
 combined_output.png
 .env
+.env.prod
 data/

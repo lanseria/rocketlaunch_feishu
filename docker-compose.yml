@@ -1,0 +1,12 @@
+services:
+  rocketlaunch_feishu:
+    env_file:
+      - .env.prod
+    image: rocketlaunch_feishu:latest
+    container_name: rocketlaunch_feishu
+    network_mode: "host"
+    environment:
+      - SET_CONTAINER_TIMEZONE=true
+      - CONTAINER_TIMEZONE=Asia/Shanghai
+    restart: unless-stopped
+    init: true

@@ -3,15 +3,15 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "python-cli-starter"
-dynamic = ["version"]
-description = "Python CLI Starter Template"
+name = "rocketlaunch_feishu"
+version = "0.1.0"
+description = "A CLI tool for synchronizing rocket launch data to Feishu Bitable"
 readme = "README.md"
 requires-python = "<3.13"
 license = "MIT"
 keywords = []
 authors = [
-  { name = "lanseria", email = "your-email@example.com" },
+  { name = "zhangchao", email = "" },
 ]
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -39,11 +39,11 @@ build = [
 ]
 
 [project.scripts]
-cli = "python_cli_starter.main:app"
+cli = "rocketlaunch_feishu.main:app"
 
 # Hatchling 特定配置
 [tool.hatch.version]
-path = "src/python_cli_starter/__init__.py"
+path = "src/rocketlaunch_feishu/__init__.py"
 
 # 添加 hatch 包配置
 [tool.hatch.packages.find]
