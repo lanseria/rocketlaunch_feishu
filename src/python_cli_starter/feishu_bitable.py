@@ -26,8 +26,8 @@ class FeishuBitableHelper:
         self.table_id = os.getenv("BITABLE_TABLE_ID")
         self.view_id = os.getenv("BITABLE_VIEW_ID")
 
-    def list_records(self, field_names=None, sort=None, page_size=20):
-        from lark_oapi.api.bitable.v1 import SearchAppTableRecordRequest, SearchAppTableRecordRequestBody, Sort
+    def list_records(self, field_names=None, sort=None, filter=None, page_size=100):
+        from lark_oapi.api.bitable.v1 import SearchAppTableRecordRequest, SearchAppTableRecordRequestBody, Sort, FilterInfo, Condition
 
         request_body_builder = SearchAppTableRecordRequestBody.builder()
 
@@ -46,6 +46,22 @@ class FeishuBitableHelper:
                     .build()
                 sort_list.append(sort_obj)
             request_body_builder = request_body_builder.sort(sort_list)
+        # console.log(filter)
+        if filter:
+            conditions = []
+            for f in filter.get("conditions", []):
+                condition = Condition.builder() \
+                    .field_name(f.get("field_name")) \
+                    .operator(f.get("operator")) \
+                    .value(f.get("value")) \
+                    .build()
+                conditions.append(condition)
+            
+            filter_info = FilterInfo.builder() \
+                .conjunction("and") \
+                .conditions(conditions) \
+                .build()
+            request_body_builder = request_body_builder.filter(filter_info)
 
         request_body = request_body_builder.automatic_fields(False).build()
 
@@ -59,7 +75,18 @@ class FeishuBitableHelper:
         response = self.client.bitable.v1.app_table_record.search(request)
 
         if response.success():
-            console.print("Records:", lark.JSON.marshal(response.data, indent=4))
+            # 打印数据
+            # console.print("Records:", lark.JSON.marshal(response.data, indent=2))
+            
+            # 保存数据到文件
+            data_path = "./data/lark/latest.json"
+            try:
+                with open(data_path, 'w', encoding='utf-8') as f:
+                    f.write(lark.JSON.marshal(response.data, indent=2))
+                console.print(f"[green]数据已保存到: {data_path}[/green]")
+            except Exception as e:
+                console.print(f"[red]保存数据失败: {str(e)}[/red]")
+            
             return response.data
         else:
             console.print(f"[red]Failed to search records, code: {response.code}, msg: {response.msg}[/red]")
