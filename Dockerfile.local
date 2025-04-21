@@ -14,11 +14,10 @@ WORKDIR /app
 # 复制项目文件到容器中
 COPY ./src ./src
 COPY ./pyproject.toml ./
-COPY ./captcha.onnx ./
 COPY ./README.md ./
 
 # 安装构建工具（如有 C 扩展或依赖要求，可加 build-essential）
-RUN apt-get update && apt-get install -y --no-install-recommends jq chromium chromium-driver tzdata \
+RUN apt-get update && apt-get install -y --no-install-recommends jq tzdata \
     && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
     && echo $TZ > /etc/timezone \
     && dpkg-reconfigure --frontend noninteractive tzdata \
@@ -31,4 +30,4 @@ RUN pip install --upgrade pip
 # 安装项目依赖（推荐使用 PEP 517/518 标准，支持 pyproject.toml）
 RUN pip install -e .
 
-ENTRYPOINT ["sef", "schedule-daily"]
+ENTRYPOINT ["cli", "schedule-daily"]

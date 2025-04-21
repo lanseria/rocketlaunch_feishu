@@ -2,16 +2,15 @@ import typer
 from typing import Optional
 from rich.console import Console
 import os
-import glob
 import traceback
 import httpx
 import re
 from .html_parser import parse_launches
 import json
-from datetime import datetime
-from .feishu_bitable import FeishuBitableHelper
-from datetime import datetime
+from datetime import datetime, timedelta
+import time
 from zoneinfo import ZoneInfo
+from .feishu_bitable import FeishuBitableHelper
 
 app = typer.Typer()
 console = Console()
@@ -55,59 +54,6 @@ def hello(name: Optional[str] = typer.Argument(None)):
         console.print(f"Hello [bold green]{name}[/bold green]!")
     else:
         console.print("Hello [bold blue]World[/bold blue]!")
-
-@app.command()
-def bitable_list():
-    """从飞书 Bitable 中读取数据，并以表格方式打印"""
-    console.print("初始化 FeishuBitableHelper ...")
-    try:
-        helper = FeishuBitableHelper()
-        # helper.list_table_fields()
-        # helper.list_records(field_names=["发射日期时间", "发射任务名称", "Rocket Model", "发射位", "发射地点"], 
-        #     sort=[{"field_name": "发射日期时间", "desc": True}]
-        # )
-        launch = {
-            "mission": "Starlink-173 (8-8)",
-            "vehicle": "Falcon 9",
-            "pad": "SLC-4E",
-            "location": "California United States SLC-4E, Vandenberg SFB ,",
-            "timestamp": 1717851480
-        }
-        helper.add_launch_to_bitable(launch)
-    except Exception as e:
-        console.print(f"[bold red]获取多维表格应用失败: {e}[/bold red]")
-
-@app.command()
-def bitable_import_after(timestamp: int = typer.Argument(..., help="只导入大于此时间戳的数据")):
-    """
-    查询 data/json/ 目录下最新的 json 文件，将发射时间(timestamp)大于指定值的数据批量插入飞书多维表格
-    """
-    console.print("初始化 FeishuBitableHelper ...")
-    try:
-        helper = FeishuBitableHelper()
-        # 查找最新的 json 文件
-        json_files = glob.glob('data/json/*.json')
-        if not json_files:
-            console.print('[red]未找到任何 JSON 文件[/red]')
-            raise typer.Exit(1)
-        latest_file = max(json_files, key=os.path.getmtime)
-        with open(latest_file, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        # 过滤出 timestamp 大于指定值的
-        filtered = [item for item in data if isinstance(item, dict) and item.get("timestamp", 0) > timestamp]
-        if not filtered:
-            console.print(f"[yellow]没有找到 timestamp 大于 {timestamp} 的数据[/yellow]")
-            return
-        # 插入到多维表格
-        for launch in filtered:
-            result = helper.add_launch_to_bitable(launch)
-            if result:
-                console.print(f"[green]已插入: {launch.get('mission', '')}[/green]")
-            else:
-                console.print(f"[red]插入失败: {launch.get('mission', '')}[/red]")
-        console.print(f"[bold green]共插入 {len(filtered)} 条数据[/bold green]")
-    except Exception as e:
-        console.print(f"[bold red]导入失败: {e}[/bold red]")
 
 @app.command()
 def download_html():
@@ -201,6 +147,37 @@ def sync_launches():
 def sync_all():
     """完整的数据同步流程：下载、解析、同步数据"""
     sync_launches()
+
+@app.command()
+def schedule_daily(hour: int = typer.Option(18, help="每天执行的小时（24小时制）"), 
+                  minute: int = typer.Option(0, help="每天执行的分钟")):
+    """每天定时执行一次数据同步，默认每天 18:00 执行"""
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        console.print("[bold red]无效的时间设置！小时应在0-23之间，分钟应在0-59之间[/bold red]")
+        raise typer.Exit(1)
+        
+    console.print(f"[bold green]定时任务启动，每天 {hour:02d}:{minute:02d} 执行一次...[/bold green]")
+    
+    while True:
+        now = datetime.now()
+        next_run = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        
+        if now >= next_run:
+            # 已过今天执行时间，则定到明天
+            next_run += timedelta(days=1)
+            
+        sleep_seconds = (next_run - now).total_seconds()
+        console.print(f"距离下次执行还有 {int(sleep_seconds)} 秒，预计下次执行时间: {next_run.strftime('%Y-%m-%d %H:%M:%S')}")
+        
+        time.sleep(sleep_seconds)
+        
+        try:
+            console.print("[bold blue]开始执行定时同步任务...[/bold blue]")
+            sync_launches()
+            console.print("[bold green]定时任务执行完成[/bold green]")
+        except Exception as e:
+            console.print(f"[bold red]定时任务执行失败: {str(e)}[/bold red]")
+            traceback.print_exc()
 
 if __name__ == "__main__":
     app()

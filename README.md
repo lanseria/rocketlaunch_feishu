@@ -17,6 +17,7 @@ cp .env.example .env.prod
 docker build -t rocketlaunch_feishu:latest .
 # 国内 
 # docker build -t rocketlaunch_feishu:latest -f Dockerfile.local .
+docker compose up -d
 ```
 
 ## 使用方法
