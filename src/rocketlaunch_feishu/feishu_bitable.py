@@ -81,6 +81,8 @@ class FeishuBitableHelper:
             # 保存数据到文件
             data_path = "./data/lark/latest.json"
             try:
+                # 确保目录存在
+                os.makedirs(os.path.dirname(data_path), exist_ok=True)
                 with open(data_path, 'w', encoding='utf-8') as f:
                     f.write(lark.JSON.marshal(response.data, indent=2))
                 console.print(f"[green]数据已保存到: {data_path}[/green]")
