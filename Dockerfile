@@ -1,7 +1,14 @@
 # 使用官方 Python 镜像（建议3.12，确保与本地开发一致）
 FROM python:3.12-slim-bookworm
 
-ENV LANG=C.UTF-8
+ENV LANG=C.UTF-8 \
+    TZ=Asia/Shanghai
+
+# 安装 tzdata 并设置时区
+RUN apt-get update && apt-get install -y tzdata && \
+    ln -fs /usr/share/zoneinfo/${TZ} /etc/localtime && \
+    dpkg-reconfigure -f noninteractive tzdata && \
+    rm -rf /var/lib/apt/lists/*
 
 # 设置工作目录
 WORKDIR /app
