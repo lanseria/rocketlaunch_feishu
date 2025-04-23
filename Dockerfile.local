@@ -1,8 +1,10 @@
 # 使用官方 Python 镜像（建议3.12，确保与本地开发一致）
 FROM docker.1ms.run/python:3.12-slim-bookworm
 
-ENV LANG=C.UTF-8 \
-    TZ=Asia/Shanghai
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    TZ=Asia/Shanghai \
+    LANG=C.UTF-8
 
 # 设置 apt 使用清华镜像源（适用于 Debian Bookworm）
 # 使用 DEB822 格式（不修改镜像源，保持默认官方源）

@@ -6,7 +6,6 @@ services:
     container_name: rocketlaunch_feishu
     network_mode: "host"
     environment:
-      - SET_CONTAINER_TIMEZONE=true
-      - CONTAINER_TIMEZONE=Asia/Shanghai
+      - TZ=Asia/Shanghai
     restart: unless-stopped
     init: true
