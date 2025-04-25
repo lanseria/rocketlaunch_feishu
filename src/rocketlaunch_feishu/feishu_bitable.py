@@ -1,19 +1,24 @@
 import lark_oapi as lark
-from rich.console import Console
 from lark_oapi.api.bitable.v1 import UpdateAppTableRecordRequest, AppTableRecord, CreateAppTableRecordRequest
 from lark_oapi.api.contact.v3 import *
 from dotenv import load_dotenv
 import os
 import json
+import logging
 
-console = Console()
+# Set up logger
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+handler = logging.StreamHandler()
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+handler.setFormatter(formatter)
+logger.addHandler(handler)
 
 class FeishuBitableHelper:
     def __init__(self):
         load_dotenv()
         app_id = os.getenv("FEISHU_APP_ID")
         app_secret = os.getenv("FEISHU_APP_SECRET")
-        console.print(app_id, app_secret)
         if not app_id or not app_secret:
             raise ValueError("请在.env文件中配置FEISHU_APP_ID和FEISHU_APP_SECRET")
         self.client = lark.Client.builder() \
@@ -46,7 +51,7 @@ class FeishuBitableHelper:
                     .build()
                 sort_list.append(sort_obj)
             request_body_builder = request_body_builder.sort(sort_list)
-        # console.log(filter)
+        
         if filter:
             conditions = []
             for f in filter.get("conditions", []):
@@ -75,9 +80,6 @@ class FeishuBitableHelper:
         response = self.client.bitable.v1.app_table_record.search(request)
 
         if response.success():
-            # 打印数据
-            # console.print("Records:", lark.JSON.marshal(response.data, indent=2))
-            
             # 保存数据到文件
             data_path = "./data/lark/latest.json"
             try:
@@ -85,13 +87,13 @@ class FeishuBitableHelper:
                 os.makedirs(os.path.dirname(data_path), exist_ok=True)
                 with open(data_path, 'w', encoding='utf-8') as f:
                     f.write(lark.JSON.marshal(response.data, indent=2))
-                console.print(f"[green]数据已保存到: {data_path}[/green]")
+                logger.info(f"数据已保存到: {data_path}")
             except Exception as e:
-                console.print(f"[red]保存数据失败: {str(e)}[/red]")
+                logger.error(f"保存数据失败: {str(e)}")
             
             return response.data
         else:
-            console.print(f"[red]Failed to search records, code: {response.code}, msg: {response.msg}[/red]")
+            logger.error(f"Failed to search records, code: {response.code}, msg: {response.msg}")
             return None
 
     def list_table_fields(self, page_size=20):
@@ -110,10 +112,10 @@ class FeishuBitableHelper:
         response = self.client.bitable.v1.app_table_field.list(request)
 
         if response.success():
-            console.print("Fields:", lark.JSON.marshal(response.data, indent=4))
+            logger.info(f"Fields: {lark.JSON.marshal(response.data, indent=4)}")
             return response.data
         else:
-            console.print(f"[red]Failed to list fields, code: {response.code}, msg: {response.msg}[/red]")
+            logger.error(f"Failed to list fields, code: {response.code}, msg: {response.msg}")
             return None
 
     def update_record(self, record_id=None, fields_dict=None):
@@ -131,10 +133,9 @@ class FeishuBitableHelper:
         response = self.client.bitable.v1.app_table_record.update(request)
 
         if response.success():
-            # console.print("Update success:", lark.JSON.marshal(response.data, indent=4))
             return response.data
         else:
-            console.print(f"[red]Failed to update record, code: {response.code}, msg: {response.msg}[/red]")
+            logger.error(f"Failed to update record, code: {response.code}, msg: {response.msg}")
             return None
 
     def add_launch_to_bitable(self, launch: dict):
@@ -160,8 +161,8 @@ class FeishuBitableHelper:
 
         response = self.client.bitable.v1.app_table_record.create(request)
         if not response.success():
-            lark.logger.error(
+            logger.error(
                 f"新增失败, code: {response.code}, msg: {response.msg}, log_id: {response.get_log_id()}, resp: \n{json.dumps(json.loads(response.raw.content), indent=4, ensure_ascii=False)}")
             return False
-        lark.logger.info(lark.JSON.marshal(response.data, indent=4))
+        logger.info(lark.JSON.marshal(response.data, indent=4))
         return True
