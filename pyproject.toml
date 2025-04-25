@@ -11,7 +11,7 @@ requires-python = "<3.13"
 license = "MIT"
 keywords = []
 authors = [
-  { name = "zhangchao", email = "" },
+  { name = "zhangchao", email = "zhangchao564265135@hotmail.com" },
 ]
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -40,15 +40,6 @@ build = [
 
 [project.scripts]
 cli = "rocketlaunch_feishu.main:app"
-
-# Hatchling 特定配置
-[tool.hatch.version]
-path = "src/rocketlaunch_feishu/__init__.py"
-
-# 添加 hatch 包配置
-[tool.hatch.packages.find]
-include = ["src/*"]
-src = "src"
 
 [tool.pytest.ini_options]
 addopts = "-ra -q"
