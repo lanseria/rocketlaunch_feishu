@@ -28,13 +28,27 @@ rocketlaunch-feishu sync-all
 rocketlaunch-feishu sync-launches --source "nextspaceflight.com"
 ```
 
-同步 nextspaceflight.com 的所有历史页面：
+Fetch data from a source:
 ```bash
-rocketlaunch-feishu sync-launches --source "nextspaceflight.com" --all-pages
+rocketlaunch-feishu fetch-data --source "nextspaceflight.com" --all-pages
+# This will create a file like data/processed_launches/nextspaceflight.com_processed_all_pages.json
 ```
-或者，限制最大页数：
+Or specify an output file:
 ```bash
-rocketlaunch-feishu sync-launches --source "nextspaceflight.com" --all-pages --max-pages-nextspaceflight 1
+rocketlaunch-feishu fetch-data --source "rocketlaunch.live" --output-file my_rocket_data.json
+```
+Prepare data for Feishu sync (compare with Feishu):
+```bash
+rocketlaunch-feishu prepare-feishu-sync --processed-file "data/processed_launches/nextspaceflight.com_processed_all_pages.json"
+# This will create a file like data/to_sync_launches/nextspaceflight.com_processed_all_pages_to_sync.json
+```
+Or specify an output file:
+```bash
+rocketlaunch-feishu prepare-feishu-sync --processed-file my_rocket_data.json --output-to-sync-file ready_for_feishu.json
+```
+Execute the sync to Feishu (with resume capability):
+```bash
+rocketlaunch-feishu execute-feishu-sync --to-sync-file "data/to_sync_launches/nextspaceflight.com_processed_all_pages_to_sync.json" --delay-between-adds 0.5
 ```
 
 ## 测试

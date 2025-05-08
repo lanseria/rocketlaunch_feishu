@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 import os
 import json
 import logging
+import traceback
 
 # Set up logger
 logger = logging.getLogger(__name__)
@@ -227,16 +228,70 @@ class FeishuBitableHelper:
             .request_body(AppTableRecord.builder().fields(fields).build()) \
             .build()
 
-        response = self.client.bitable.v1.app_table_record.create(request)
-        if not response.success():
-            logger.error(
-                f"新增失败, Mission: {launch.get('mission', 'N/A')}, Code: {response.code}, Msg: {response.msg}, Log ID: {response.get_log_id()}"
-            )
-            try:
-                error_details = json.loads(response.raw.content)
-                logger.error(f"Error details: {json.dumps(error_details, indent=2, ensure_ascii=False)}")
-            except: # nosec
-                logger.error(f"Raw error response: {response.raw.content.decode(errors='ignore') if response.raw else 'N/A'}")
+        raw_response_content = "N/A"
+        response_status_code = -1
+        response_headers = {}
+
+        try:
+            # The actual HTTP request happens inside the client's method
+            # We can't easily get the raw httpx.Response object here before unmarshalling
+            # without modifying the SDK or using very low-level SDK features.
+            # The error happens *during* the SDK's processing of the response.
+            
+            response = self.client.bitable.v1.app_table_record.create(request)
+            
+            # If we reach here, the SDK's initial parsing might have worked or failed later.
+            # If response.raw is available, let's try to get info from it.
+            if hasattr(response, 'raw') and response.raw:
+                raw_response_content = response.raw.content.decode(errors='ignore') if response.raw.content else "Empty Content"
+                response_status_code = response.raw.status_code
+                response_headers = dict(response.raw.headers) if response.raw.headers else {}
+
+
+            if not response.success():
+                logger.error(
+                    f"新增失败, Mission: {launch.get('mission', 'N/A')}, Code: {response.code}, Msg: {response.msg}, Log ID: {response.get_log_id()}"
+                )
+                logger.error(f"Request Fields: {json.dumps(fields, ensure_ascii=False, indent=2)}")
+                logger.error(f"Raw Response Status Code: {response_status_code}")
+                logger.error(f"Raw Response Headers: {json.dumps(response_headers, indent=2)}")
+                logger.error(f"Raw Response Content (Decoded): {raw_response_content}")
+                # Log detailed error from response if available in structured form
+                try:
+                    if raw_response_content and raw_response_content != "Empty Content" and raw_response_content != "N/A":
+                        error_details = json.loads(raw_response_content) # Try to parse it again for logging
+                        logger.error(f"Parsed Raw Error details: {json.dumps(error_details, indent=2, ensure_ascii=False)}")
+                except json.JSONDecodeError:
+                    logger.error(f"Raw Response Content could not be parsed as JSON (this is expected if it's not JSON).")
+                except Exception as e_parse:
+                    logger.error(f"Error trying to parse raw response for logging: {e_parse}")
+                return False
+            
+            # logger.info(f"新增成功: {launch.get('mission', 'N/A')}") # Simplified success log
+            return True
+
+        except lark.JSONDecodeError as jde: # Catch the specific error from the SDK
+            # This exception is likely what you are seeing, but it's a custom one from lark.JSON
+            # The traceback shows the standard json.JSONDecodeError
+            logger.error(f"Lark JSONDecodeError during Feishu API call for mission: {launch.get('mission', 'N/A')}")
+            logger.error(f"Request Fields: {json.dumps(fields, ensure_ascii=False, indent=2)}")
+            logger.error(f"Error details: {str(jde)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            # At this point, `response.raw` might not be available or might be the source of the error.
+            # It's hard to get the raw content if the SDK fails during its unmarshal.
             return False
-        
-        return True
+        except json.JSONDecodeError as py_jde: # Catch the standard Python JSONDecodeError
+            logger.error(f"Standard Python JSONDecodeError during Feishu API call for mission: {launch.get('mission', 'N/A')}")
+            logger.error(f"Request Fields: {json.dumps(fields, ensure_ascii=False, indent=2)}")
+            logger.error(f"Error message: {py_jde.msg}, Document: '{py_jde.doc}', Pos: {py_jde.pos}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            # Try to get the raw response if possible, though it's tricky if error is deep in SDK.
+            # The SDK might have an httpx.Response object internally before this error.
+            # You might need to log the `request` object's details more.
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected exception during Feishu API call for mission: {launch.get('mission', 'N/A')}")
+            logger.error(f"Request Fields: {json.dumps(fields, ensure_ascii=False, indent=2)}")
+            logger.error(f"Exception type: {type(e).__name__}, Error: {str(e)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return False

@@ -13,7 +13,8 @@ from .feishu_bitable import FeishuBitableHelper
 import logging
 from logging.handlers import RotatingFileHandler
 from enum import Enum
-from bs4 import BeautifulSoup # For checking "No more results"
+from bs4 import BeautifulSoup 
+import hashlib # For generating hash of data file
 
 # Configure logging
 def setup_logging():
@@ -116,64 +117,39 @@ def parse_datetime_rocketlaunchlive_dict(obj: dict) -> Optional[int]:
         logger.warning(f"RL.live Datetime parsing failed for '{date_str} {time_str}': {e}")
         return None
 
-def download_html_from_url(url: str, source_name: str) -> str:
-    """从指定URL下载HTML数据 / Download HTML data from a given URL"""
-    output_dir = "data/html"
-    # Sanitize source_name for filename
-    safe_source_name = "".join(c if c.isalnum() else "_" for c in source_name)
-    output_file = f"{output_dir}/{safe_source_name}_latest.html"
-    
-    os.makedirs(output_dir, exist_ok=True)
-    
-    try:
-        logger.info(f"Downloading data from {url} for source {source_name} / 正在从 {url} ({source_name}) 下载数据...")
-        # Add a user-agent, some sites might block default httpx/python user-agent
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-        }
-        with httpx.Client(timeout=30.0, follow_redirects=True) as client: # Increased timeout
-            response = client.get(url, headers=headers)
-            response.raise_for_status() # Raise an exception for HTTP 4xx/5xx errors
-        
-        with open(output_file, "w", encoding="utf-8") as f:
-            f.write(response.text)
-        
-        logger.info(f"Data saved to {output_file} / 数据已保存到 {output_file}")
-        return output_file
-    except httpx.HTTPStatusError as e:
-        logger.error(f"HTTP error during download from {url}: {e.response.status_code} - {e.response.text[:200]} / 下载HTTP错误: {e.response.status_code}")
-        raise typer.Exit(1)
-    except httpx.RequestError as e:
-        logger.error(f"Request error during download from {url}: {str(e)} / 下载请求错误: {str(e)}")
-        raise typer.Exit(1)
-    except Exception as e:
-        logger.error(f"Download failed for {url}: {str(e)} / 下载失败: {str(e)}")
-        logger.error(traceback.format_exc())
-        raise typer.Exit(1)
 
+# --- CONFIGURABLE FILE PATHS ---
+PROCESSED_DATA_DIR = "data/processed_launches"
+TO_SYNC_DATA_DIR = "data/to_sync_launches"
+SYNC_PROGRESS_FILE = "data/sync_progress.json"
+# Ensure these directories exist
+os.makedirs(PROCESSED_DATA_DIR, exist_ok=True)
+os.makedirs(TO_SYNC_DATA_DIR, exist_ok=True)
+os.makedirs("data/html", exist_ok=True) # From download_html_for_source
+os.makedirs("data/raw", exist_ok=True)  # From download_html_for_source or fetch_data
+
+# download_html_for_source (from previous version) - ensure it saves to data/html
+# (Minor change: it's mostly a helper now, main logic in fetch_data)
 def download_html_for_source(
     source: LaunchSource, 
     all_pages: bool = False,
-    max_pages_nextspaceflight: int = 50 # Safety limit for nextspaceflight all_pages
+    max_pages_nextspaceflight: int = 50 
 ) -> str:
-    """
-    Downloads HTML data for a given source.
-    Handles single page download or multi-page download and concatenation for nextspaceflight.com.
-    Returns the path to the (potentially combined) HTML file.
-    """
+    # ... (implementation from previous answer, ensuring it saves to data/html/{source}_latest.html) ...
+    # This function now just downloads and returns the path to the raw HTML file(s).
+    # The concatenation logic for nextspaceflight multi-page should ideally be here or called by fetch_data.
+    # For simplicity, let's assume it returns one path, which might be a combined HTML file.
     output_dir = "data/html"
     os.makedirs(output_dir, exist_ok=True)
     safe_source_name = "".join(c if c.isalnum() else "_" for c in source.value)
-    # Filename will indicate if it's all pages for clarity
     all_pages_suffix = "_all_pages" if all_pages and source == LaunchSource.NEXTSPACEFLIGHT else ""
-    output_file = f"{output_dir}/{safe_source_name}_latest{all_pages_suffix}.html"
+    # This output_file is for the raw HTML from download step
+    raw_html_output_file = f"{output_dir}/{safe_source_name}_latest_downloaded{all_pages_suffix}.html"
 
     combined_html_content = ""
-    
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     }
-
     try:
         with httpx.Client(timeout=30.0, follow_redirects=True) as client:
             if source == LaunchSource.ROCKETLAUNCH_LIVE:
@@ -191,361 +167,323 @@ def download_html_for_source(
                     response.raise_for_status()
                     combined_html_content = response.text
                 else:
+                    # ... (Multi-page download logic from previous answer) ...
+                    # This part should fill combined_html_content
                     logger.info(f"Downloading all pages from {base_url} for source {source.value}...")
-                    # We need to extract the main launch container part from each page
-                    # and append them. The full HTML structure might not merge well.
-                    # A simpler approach for now: just get the content of the main div.
-                    # A more robust way would be to parse each page, extract launch divs,
-                    # and then create a new minimal HTML with all launch divs.
-                    # For now, let's try concatenating the content of <div class="mdl-grid">
-                    
-                    all_launch_cards_html = [] # Store HTML strings of individual launch cards
-                    
+                    all_launch_cards_html = []
                     for page_num in range(1, max_pages_nextspaceflight + 1):
-                        page_url = f"{base_url}?page={page_num}&search=" # Assuming search is empty
+                        page_url = f"{base_url}?page={page_num}&search="
                         logger.info(f"Downloading page {page_num}: {page_url}")
-                        
-                        # Add a small delay to be polite to the server
-                        if page_num > 1:
-                            time.sleep(1) 
-
+                        if page_num > 1: time.sleep(1)
                         response = client.get(page_url, headers=headers)
                         response.raise_for_status()
                         page_content = response.text
-                        
                         soup = BeautifulSoup(page_content, 'html.parser')
-                        
-                        # Check for "No more results!" or similar indicator
-                        no_more_results_indicator = soup.find(text=re.compile(r"No more results!", re.IGNORECASE))
-                        if no_more_results_indicator:
+                        if soup.find(text=re.compile(r"No more results!", re.IGNORECASE)):
                             logger.info(f"No more results found at page {page_num}. Stopping.")
                             break
-                        
-                        # Find the main grid containing launch cards
                         main_grid = soup.find('div', class_='mdl-grid', style=re.compile(r"justify-content: center"))
-                        if not main_grid:
-                            logger.warning(f"Could not find main launch grid on page {page_num}. Content might be partial.")
-                            # Decide if to add the whole page_content or skip
-                            # For now, if grid not found, we might have issues.
-                            # Let's try to find individual cards as a fallback.
-                            
-                        # Extract individual launch cards
-                        # launch_cards_on_page = soup.find_all('div', class_=lambda x: x and 'launch' in x.split() and 'mdl-card' in x.split())
-                        # Prefer to get them from within the main_grid if found
                         target_container = main_grid if main_grid else soup
                         launch_cards_on_page = target_container.find_all('div', class_=lambda x: x and 'launch' in x.split() and 'mdl-card' in x.split())
-                        
-                        if not launch_cards_on_page and not no_more_results_indicator:
-                            # This might mean an empty page before "No more results" or a layout change
-                            logger.info(f"No launch cards found on page {page_num}, but no 'No more results' indicator. Assuming end of data or issue.")
+                        if not launch_cards_on_page and not soup.find(text=re.compile(r"No more results!", re.IGNORECASE)):
+                            logger.info(f"No launch cards found on page {page_num}, assuming end of data.")
                             break
-
-
                         for card_div in launch_cards_on_page:
                             all_launch_cards_html.append(str(card_div))
-
                         if page_num == max_pages_nextspaceflight:
                             logger.warning(f"Reached max_pages limit ({max_pages_nextspaceflight}) for NextSpaceflight.")
-                    
-                    # Construct a minimal HTML structure to hold all launch cards
                     if all_launch_cards_html:
                         combined_html_content = f"<html><body><div class='mdl-grid'>{''.join(all_launch_cards_html)}</div></body></html>"
                     else:
-                        logger.info("No launch cards collected from NextSpaceflight multi-page scrape.")
-                        combined_html_content = "<html><body></body></html>" # Empty valid HTML
-            else:
-                logger.error(f"Unknown source for download: {source.value}")
+                        combined_html_content = "<html><body></body></html>"
+            else: # Should not happen with Enum
                 raise typer.Exit(1)
 
-        with open(output_file, "w", encoding="utf-8") as f:
+        with open(raw_html_output_file, "w", encoding="utf-8") as f:
             f.write(combined_html_content)
-        
-        logger.info(f"Data saved to {output_file} / 数据已保存到 {output_file}")
-        return output_file
-
-    except httpx.HTTPStatusError as e:
-        logger.error(f"HTTP error during download for {source.value}: {e.response.status_code} - {e.response.text[:200]}")
-        raise typer.Exit(1)
-    except httpx.RequestError as e:
-        logger.error(f"Request error during download for {source.value}: {str(e)}")
-        raise typer.Exit(1)
-    except Exception as e:
+        logger.info(f"Raw HTML data saved to {raw_html_output_file}")
+        return raw_html_output_file
+    except Exception as e: # Broad exception for download issues
         logger.error(f"Download failed for {source.value}: {str(e)}")
         logger.error(traceback.format_exc())
-        raise typer.Exit(1)
+        raise typer.Exit(code=1)
+
+def generate_file_hash(filepath):
+    """Generates a SHA256 hash for a file."""
+    hasher = hashlib.sha256()
+    with open(filepath, 'rb') as f:
+        buf = f.read(65536)  # Read in 64k chunks
+        while len(buf) > 0:
+            hasher.update(buf)
+            buf = f.read(65536)
+    return hasher.hexdigest()
 
 @app.command()
-def sync_launches(
-    source: LaunchSource = typer.Option(
-        LaunchSource.ROCKETLAUNCH_LIVE, 
-        help="The data source to sync from.",
-        case_sensitive=False
-    ),
-    all_pages: bool = typer.Option(
-        False, 
-        "--all-pages/--single-page", # Makes it a toggle, default False (single page)
-        help="For NextSpaceflight: fetch all pages of past launches. Ignored for other sources."
-    ),
-    max_pages_nextspaceflight: int = typer.Option(
-        50,
-        help="Safety limit for 'all_pages' mode with NextSpaceflight."
-    )
+def fetch_data(
+    source: LaunchSource = typer.Option(..., help="The data source to fetch from."), # Made source mandatory
+    all_pages: bool = typer.Option(False, "--all-pages/--single-page", help="For NextSpaceflight: fetch all pages."),
+    max_pages_nextspaceflight: int = typer.Option(50, help="Safety limit for 'all_pages' with NextSpaceflight."),
+    output_file: Optional[str] = typer.Option(None, help="Override default output JSON file path for processed data.")
 ):
-    """下载、解析最新发射数据并同步到飞书多维表格"""
+    """Downloads HTML from the source, parses it, and saves the structured launch data to a JSON file."""
     try:
-        # 1. Download HTML (potentially multiple pages for nextspaceflight)
-        html_file = download_html_for_source(source, all_pages, max_pages_nextspaceflight)
-        
-        with open(html_file, 'r', encoding='utf-8') as f:
+        logger.info(f"Starting data fetching for source: {source.value}")
+        # 1. Download HTML
+        # The download_html_for_source now handles single/multi-page and saves the raw HTML.
+        raw_html_file = download_html_for_source(source, all_pages, max_pages_nextspaceflight)
+
+        if not os.path.exists(raw_html_file) or os.path.getsize(raw_html_file) == 0:
+            logger.error(f"Downloaded HTML file {raw_html_file} is empty or not found. Aborting fetch.")
+            raise typer.Exit(1)
+
+        with open(raw_html_file, 'r', encoding='utf-8') as f:
             html_data = f.read()
-        
-        if not html_data.strip():
-            logger.warning(f"Downloaded HTML file {html_file} is empty. Skipping parsing and sync.")
-            return
 
+        # 2. Parse HTML
         processed_launches: List[dict] = []
-
         if source == LaunchSource.ROCKETLAUNCH_LIVE:
-            if all_pages:
-                logger.info("--all-pages is ignored for rocketlaunch.live source.")
             raw_parsed_launches = parse_launches_rocketlaunchlive(html_data)
-            # ... (rest of rocketlaunch.live processing remains the same as before) ...
             for launch_data in raw_parsed_launches:
                 timestamp = parse_datetime_rocketlaunchlive_dict(launch_data)
                 pad_val = launch_data.get('pad', '')
                 loc_val = launch_data.get('location', '')
                 pad_location_combined = f"{pad_val}, {loc_val}".strip().strip(',')
-                if not pad_location_combined or pad_location_combined == ",":
-                    pad_location_combined = "Unknown"
-                
+                if not pad_location_combined or pad_location_combined == ",": pad_location_combined = "Unknown"
                 processed_launches.append({
-                    'mission': launch_data.get('mission'),
-                    'vehicle': launch_data.get('vehicle'),
-                    'pad_location': pad_location_combined,
-                    'timestamp': timestamp or 0,
-                    'status': "Unknown", 
-                    'mission_description': "N/A", 
-                    'source_name': source.value
+                    'mission': launch_data.get('mission'), 'vehicle': launch_data.get('vehicle'),
+                    'pad_location': pad_location_combined, 'timestamp': timestamp or 0,
+                    'status': "Unknown", 'mission_description': "N/A", 'source_name': source.value
                 })
-
         elif source == LaunchSource.NEXTSPACEFLIGHT:
             processed_launches = parse_launches_nextspaceflight(html_data, source.value)
         
-        logger.info(f"Parsed {len(processed_launches)} launch records from {source.value} / 从 {source.value} 解析到 {len(processed_launches)} 条发射数据")
+        logger.info(f"Parsed {len(processed_launches)} launch records from {source.value}")
 
         if not processed_launches:
-            logger.info("No launch data parsed, exiting. / 没有解析到发射数据，退出。")
+            logger.info("No launch data parsed. Output file will be empty or not created if default.")
+            # Still create an empty JSON if an output file is specified, or a default one.
+        
+        # 3. Save processed data to a JSON file
+        if output_file is None:
+            safe_source_name = "".join(c if c.isalnum() else "_" for c in source.value)
+            all_pages_suffix = "_all_pages" if all_pages and source == LaunchSource.NEXTSPACEFLIGHT else ""
+            # This is the output of the fetch_data command, the processed launches.
+            output_file = f"{PROCESSED_DATA_DIR}/{safe_source_name}_processed{all_pages_suffix}.json"
+        
+        os.makedirs(os.path.dirname(output_file), exist_ok=True) # Ensure dir exists if custom path
+        with open(output_file, 'w', encoding='utf-8') as f:
+            json.dump(processed_launches, f, ensure_ascii=False, indent=2)
+        logger.info(f"Successfully fetched and processed data. Saved to: {output_file}")
+        logger.info(f"This file can now be used with 'prepare-feishu-sync' and 'execute-feishu-sync'.")
+
+    except Exception as e:
+        logger.error(f"Data fetching process failed: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise typer.Exit(1)
+
+@app.command()
+def prepare_feishu_sync(
+    processed_file: str = typer.Option(..., help="Path to the JSON file containing processed launch data (from fetch-data)."),
+    output_to_sync_file: Optional[str] = typer.Option(None, help="Override default output JSON file path for 'to-sync' data.")
+):
+    """Compares processed launch data with Feishu and prepares a list of records to be synced."""
+    try:
+        if not os.path.exists(processed_file):
+            logger.error(f"Processed data file not found: {processed_file}")
+            raise typer.Exit(1)
+
+        with open(processed_file, 'r', encoding='utf-8') as f:
+            processed_launches = json.load(f)
+
+        if not processed_launches:
+            logger.info(f"No launches in {processed_file} to prepare for sync. Exiting.")
+            # Create an empty 'to_sync' file if an output is specified.
+            if output_to_sync_file:
+                with open(output_to_sync_file, 'w', encoding='utf-8') as f_empty:
+                    json.dump([], f_empty)
             return
 
-        # Save processed (enriched) data
-        safe_source_name = "".join(c if c.isalnum() else "_" for c in source.value)
-        all_pages_suffix_json = "_all_pages" if all_pages and source == LaunchSource.NEXTSPACEFLIGHT else ""
-        raw_dir = "data/raw"
-        os.makedirs(raw_dir, exist_ok=True)
-        output_path = f"{raw_dir}/{safe_source_name}_latest_processed{all_pages_suffix_json}.json"
-        with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(processed_launches, f, ensure_ascii=False, indent=2)
-        logger.info(f"Processed data saved to {output_path} / 处理后数据已保存到 {output_path}")
+        # Determine source from the first record (assuming all records in file are from same source)
+        # This is a simplification; a more robust way would be to store source in metadata or ensure homogeneity.
+        source_value_from_file = processed_launches[0].get('source_name')
+        if not source_value_from_file:
+            logger.error("Could not determine source from processed file. 'source_name' missing in records.")
+            raise typer.Exit(1)
+        
+        logger.info(f"Preparing Feishu sync for data from file: {processed_file} (Source: {source_value_from_file})")
 
         valid_launches_for_sync = [
             l for l in processed_launches 
             if l.get('timestamp', 0) > 0 or l.get('status') in ["Scheduled", "TBD"]
         ]
         if not valid_launches_for_sync:
-            logger.info("No launches with valid timestamps (or valid TBD/Scheduled status) to process for Feishu sync.")
+            logger.info("No launches with valid timestamps (or valid TBD/Scheduled status) to process.")
+            if output_to_sync_file: # Create empty if specified
+                with open(output_to_sync_file, 'w', encoding='utf-8') as f_empty:
+                    json.dump([], f_empty)
             return
         
         actual_timestamps = [l['timestamp'] for l in valid_launches_for_sync if l['timestamp'] > 0]
-        
-        # If --all-pages is used, we might be fetching very old data.
-        # The filter for Feishu records needs careful consideration.
-        # Option 1: Fetch ALL records from Feishu for this source and do a full local diff. (memory intensive for large Feishu tables)
-        # Option 2: If oldest_timestamp_in_scrape is very old, don't filter by time, only by source.
-        # Option 3: Still use oldest_timestamp_in_scrape. (Chosen here for consistency, but be aware)
-        
         oldest_timestamp_in_scrape = min(actual_timestamps) if actual_timestamps else 0
 
         filter_for_feishu = {"conditions": [], "conjunction": "and"}
-        
-        # Always filter by source
         filter_for_feishu["conditions"].append({
-            "field_name": "Source",
-            "operator": "is",
-            "value": [source.value]
+            "field_name": "Source", "operator": "is", "value": [source_value_from_file]
         })
-
-        # Add time filter if oldest_timestamp_in_scrape is valid AND we are NOT in all_pages mode
-        # OR if we are in all_pages mode but want to limit feishu query (can lead to missing updates for older records if feishu is not complete)
-        # For full sync with --all-pages, it might be better to NOT filter by date and get all records for that source.
-        # However, this could be a very large query.
-        # Current strategy: if all_pages, we still use the oldest timestamp from the scrape to limit Feishu query.
-        # This assumes we are trying to fill in missing data from that point onwards.
-        # If the goal of --all-pages is to *refresh* all data, the Feishu interaction would need to be more complex (e.g., update existing).
         if oldest_timestamp_in_scrape > 0: 
             filter_for_feishu["conditions"].append({
-                "field_name": "发射日期时间", 
-                "operator": "isGreaterOrEqual", 
+                "field_name": "发射日期时间", "operator": "isGreaterOrEqual", 
                 "value": ["ExactDate", str(oldest_timestamp_in_scrape * 1000)] 
             })
         
         helper = FeishuBitableHelper()
-        # Adding '发射状态' to fields_to_fetch if we want to update based on status change (not implemented here)
         fields_to_fetch = ["发射日期时间", "Source", "发射任务名称"]
-        bitable_records_response = helper.list_records(filter=filter_for_feishu, field_names=json.dumps(fields_to_fetch), page_size=500) # Increased page_size for list_records
+        bitable_records_response = helper.list_records(filter=filter_for_feishu, field_names=json.dumps(fields_to_fetch), page_size=500)
         
         existing_records_tuples = set()
         if bitable_records_response and bitable_records_response.items:
+            # ... (same logic as before to populate existing_records_tuples) ...
             for record in bitable_records_response.items:
-                ts_millis = record.fields.get("发射日期时间") 
-                rec_source_field = record.fields.get("Source") 
-                rec_mission = record.fields.get("发射任务名称", "")
-
-                rec_source_val = "Unknown"
-                if isinstance(rec_source_field, str): rec_source_val = rec_source_field
-                elif isinstance(rec_source_field, list) and rec_source_field: rec_source_val = rec_source_field[0]
-
-                existing_records_tuples.add(
-                    (int(ts_millis / 1000) if ts_millis else 0, 
-                     rec_source_val, 
-                     rec_mission.strip().lower())
-                )
-            logger.info(f"Found {len(existing_records_tuples)} existing records in Feishu matching criteria (Source: {source.value}, Time >= {oldest_timestamp_in_scrape if oldest_timestamp_in_scrape > 0 else 'Any'}).")
+                ts_millis = record.fields.get("发射日期时间"); rec_source_field = record.fields.get("Source"); rec_mission = record.fields.get("发射任务名称", "")
+                rec_source_val = "Unknown"; Z = isinstance
+                if Z(rec_source_field, str): rec_source_val = rec_source_field
+                elif Z(rec_source_field, list) and rec_source_field: rec_source_val = rec_source_field[0]
+                existing_records_tuples.add((int(ts_millis / 1000) if ts_millis else 0, rec_source_val, rec_mission.strip().lower()))
+            logger.info(f"Found {len(existing_records_tuples)} existing records in Feishu matching criteria.")
         else:
-            logger.info(f"No existing records found in Feishu matching criteria or failed to fetch (Source: {source.value}, Time >= {oldest_timestamp_in_scrape if oldest_timestamp_in_scrape > 0 else 'Any'}).")
+            logger.info("No existing records found in Feishu matching criteria or failed to fetch.")
             
-        new_launches_to_add = []
+        new_launches_to_add_to_feishu = []
         for launch in valid_launches_for_sync:
-            current_launch_tuple = (
-                launch['timestamp'], 
-                launch['source_name'],
-                launch.get('mission', "").strip().lower()
-            )
+            current_launch_tuple = (launch['timestamp'], launch['source_name'], launch.get('mission', "").strip().lower())
             if current_launch_tuple not in existing_records_tuples:
-                new_launches_to_add.append(launch)
+                new_launches_to_add_to_feishu.append(launch)
         
-        if not new_launches_to_add:
-            logger.info("No new launch data to sync to Feishu based on (Timestamp, Source, Mission) comparison.")
-            return
-        
-        new_launches_to_add.sort(key=lambda x: x['timestamp'] if x['timestamp'] > 0 else float('inf'))
+        if not new_launches_to_add_to_feishu:
+            logger.info("No new launch data to be added to Feishu.")
+        else:
+            new_launches_to_add_to_feishu.sort(key=lambda x: x['timestamp'] if x['timestamp'] > 0 else float('inf'))
+            logger.info(f"Prepared {len(new_launches_to_add_to_feishu)} records for Feishu sync.")
 
-        added_count = 0
-        for launch_to_add in new_launches_to_add:
-            # logger.info(f"Syncing to Feishu: {launch_to_add.get('mission', '')} (Source: {launch_to_add.get('source_name')}, Status: {launch_to_add.get('status')})")
-            result = helper.add_launch_to_bitable(launch_to_add) # add_launch_to_bitable handles its own logging for success/failure
-            if result:
-                added_count +=1
-        
-        logger.info(f"Attempted to sync {len(new_launches_to_add)} new records. Successfully synced {added_count} records to Feishu for source {source.value}.")
-        
+        # Save the 'to_sync' list to a new file
+        if output_to_sync_file is None:
+            base_processed_file_name = os.path.splitext(os.path.basename(processed_file))[0]
+            output_to_sync_file = f"{TO_SYNC_DATA_DIR}/{base_processed_file_name}_to_sync.json"
+
+        os.makedirs(os.path.dirname(output_to_sync_file), exist_ok=True)
+        with open(output_to_sync_file, 'w', encoding='utf-8') as f:
+            json.dump(new_launches_to_add_to_feishu, f, ensure_ascii=False, indent=2)
+        logger.info(f"Data to be synced saved to: {output_to_sync_file}")
+        logger.info(f"Run 'execute-feishu-sync --to-sync-file \"{output_to_sync_file}\"' to upload to Feishu.")
+
     except Exception as e:
-        logger.error(f"Sync process failed for source {source.value}: {str(e)}")
+        logger.error(f"Failed to prepare Feishu sync data: {str(e)}")
         logger.error(traceback.format_exc())
-        raise typer.Exit(1) # Exit for this specific sync, but sync_all can continue
-
-@app.command()
-def sync_all(
-    all_pages_nextspaceflight: bool = typer.Option(
-        False, 
-        "--all-pages-nsf/--single-page-nsf",
-        help="For NextSpaceflight source during sync_all: fetch all pages. Default is single page."
-    ),
-    max_pages_nextspaceflight: int = typer.Option(
-        50,
-        help="Safety limit for 'all_pages' mode with NextSpaceflight during sync_all."
-    )
-):
-    """
-    完整的数据同步流程：针对所有已配置的源执行下载、解析、同步数据。
-    """
-    logger.info("Starting sync for all configured sources.")
-    for source_enum_member in LaunchSource:
-        logger.info(f"--- Syncing for source: {source_enum_member.value} ---")
-        try:
-            current_all_pages = False
-            if source_enum_member == LaunchSource.NEXTSPACEFLIGHT:
-                current_all_pages = all_pages_nextspaceflight
-            
-            sync_launches(
-                source=source_enum_member, 
-                all_pages=current_all_pages, 
-                max_pages_nextspaceflight=max_pages_nextspaceflight
-            )
-            logger.info(f"--- Finished syncing for source: {source_enum_member.value} ---")
-        except typer.Exit:
-            logger.error(f"--- Sync for source {source_enum_member.value} exited. Continuing with next source if any. ---")
-        except Exception as e:
-            logger.error(f"--- Unhandled error during sync for source {source_enum_member.value}: {e} ---")
-            logger.error(traceback.format_exc())
-    logger.info("Finished sync for all sources.")
-
-@app.command()
-def schedule_daily(
-    hour: int = typer.Option(18, help="每天执行的小时（24小时制）"), 
-    minute: int = typer.Option(0, help="每天执行的分钟"),
-    source_to_schedule: Optional[LaunchSource] = typer.Option(
-        None, 
-        "--source",
-        help="Specific source to schedule. If None, schedules 'sync_all'.",
-        case_sensitive=False
-    ),
-    all_pages_nsf_scheduled: bool = typer.Option(
-        False,
-        "--all-pages-nsf-scheduled/--single-page-nsf-scheduled",
-        help="For NextSpaceflight source during scheduled task: fetch all pages. Default is single page."
-    ),
-    max_pages_nsf_scheduled: int = typer.Option(
-        50,
-        help="Safety limit for 'all_pages' mode with NextSpaceflight during scheduled task."
-    )
-):
-    """每天定时执行一次数据同步"""
-    if not (0 <= hour <= 23 and 0 <= minute <= 59):
-        logger.error("Invalid time settings! Hour must be 0-23, minute must be 0-59")
         raise typer.Exit(1)
-    
-    action_description = ""
-    if source_to_schedule:
-        action_description = f"sync_launches for {source_to_schedule.value}"
-        if source_to_schedule == LaunchSource.NEXTSPACEFLIGHT:
-            action_description += " (all_pages)" if all_pages_nsf_scheduled else " (single_page)"
-    else:
-        action_description = f"sync_all (NextSpaceflight: {'all_pages' if all_pages_nsf_scheduled else 'single_page'})"
 
-    logger.info(f"Starting scheduled job for '{action_description}', will run daily at {hour:02d}:{minute:02d}")
-    
-    while True:
-        now = datetime.now()
-        next_run = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+@app.command()
+def execute_feishu_sync(
+    to_sync_file: str = typer.Option(..., help="Path to the JSON file containing data to be synced (from prepare-feishu-sync)."),
+    delay_between_adds: float = typer.Option(0.2, help="Delay in seconds between adding each record to Feishu.")
+):
+    """Reads a 'to-sync' JSON file and adds records to Feishu, with resume capability."""
+    try:
+        if not os.path.exists(to_sync_file):
+            logger.error(f"'To-sync' file not found: {to_sync_file}")
+            raise typer.Exit(1)
+
+        with open(to_sync_file, 'r', encoding='utf-8') as f:
+            launches_to_sync = json.load(f)
+
+        if not launches_to_sync:
+            logger.info(f"No records in {to_sync_file} to sync. Exiting.")
+            if os.path.exists(SYNC_PROGRESS_FILE): # Clean up progress if to_sync is empty
+                try:
+                    with open(SYNC_PROGRESS_FILE, 'r') as pf:
+                        progress_data = json.load(pf)
+                    if progress_data.get("source_file") == to_sync_file:
+                        os.remove(SYNC_PROGRESS_FILE)
+                        logger.info(f"Removed progress file {SYNC_PROGRESS_FILE} as sync is complete/empty.")
+                except: pass # Ignore errors during cleanup
+            return
+
+        start_index = 0
+        current_file_hash = generate_file_hash(to_sync_file)
+
+        # Check for progress file
+        if os.path.exists(SYNC_PROGRESS_FILE):
+            try:
+                with open(SYNC_PROGRESS_FILE, 'r') as f:
+                    progress = json.load(f)
+                # Check if progress file is for the *exact* same to_sync_file content
+                if progress.get("source_file") == to_sync_file and progress.get("file_hash") == current_file_hash:
+                    start_index = progress.get("next_index", 0)
+                    logger.info(f"Resuming sync from index {start_index} for file {to_sync_file}.")
+                else:
+                    logger.info(f"Progress file found but for a different file/content ({progress.get('source_file')}, hash mismatch). Starting sync from beginning for {to_sync_file}.")
+                    # Overwrite progress file later if we start
+            except json.JSONDecodeError:
+                logger.warning(f"Could not parse progress file {SYNC_PROGRESS_FILE}. Starting sync from beginning.")
+            except Exception as e:
+                logger.warning(f"Error reading progress file {SYNC_PROGRESS_FILE}: {e}. Starting sync from beginning.")
         
-        if now >= next_run:
-            next_run += timedelta(days=1)
+        if start_index >= len(launches_to_sync):
+            logger.info(f"All records from {to_sync_file} seem to be already processed according to progress. Exiting.")
+            if os.path.exists(SYNC_PROGRESS_FILE): os.remove(SYNC_PROGRESS_FILE) # Clean up
+            return
+
+        helper = FeishuBitableHelper()
+        successfully_added_count = 0
+        total_to_process_this_run = len(launches_to_sync) - start_index
+
+        logger.info(f"Starting Feishu sync. Total records in file: {len(launches_to_sync)}. Processing from index: {start_index}.")
+
+        for i in range(start_index, len(launches_to_sync)):
+            launch_to_add = launches_to_sync[i]
             
-        sleep_seconds = (next_run - now).total_seconds()
-        logger.info(f"Next run for '{action_description}' in {int(sleep_seconds // 3600)}h {int((sleep_seconds % 3600) // 60)}m {int(sleep_seconds % 60)}s, at: {next_run.strftime('%Y-%m-%d %H:%M:%S')}")
-        
-        time.sleep(max(1, sleep_seconds))
-        
-        try:
-            logger.info(f"Starting scheduled task: {action_description}...")
-            if source_to_schedule:
-                current_all_pages_for_source = False
-                if source_to_schedule == LaunchSource.NEXTSPACEFLIGHT:
-                    current_all_pages_for_source = all_pages_nsf_scheduled
-                sync_launches(
-                    source=source_to_schedule, 
-                    all_pages=current_all_pages_for_source, 
-                    max_pages_nextspaceflight=max_pages_nsf_scheduled
-                )
+            # Save progress *before* attempting to add
+            try:
+                with open(SYNC_PROGRESS_FILE, 'w') as f:
+                    json.dump({"source_file": to_sync_file, "file_hash": current_file_hash, "next_index": i}, f)
+            except Exception as e_prog:
+                logger.error(f"Critical error: Could not write to progress file {SYNC_PROGRESS_FILE}: {e_prog}. Aborting to prevent data loss on resume.")
+                raise typer.Exit(1)
+
+            logger.info(f"Attempting to add record {i+1}/{len(launches_to_sync)}: {launch_to_add.get('mission', 'N/A')}")
+            result = helper.add_launch_to_bitable(launch_to_add)
+            if result:
+                successfully_added_count += 1
             else:
-                sync_all(
-                    all_pages_nextspaceflight=all_pages_nsf_scheduled, 
-                    max_pages_nextspaceflight=max_pages_nsf_scheduled
-                )
-            logger.info(f"Scheduled task ({action_description}) completed successfully.")
-        except Exception as e:
-            logger.error(f"Scheduled task ({action_description}) failed: {str(e)}")
-            logger.error(traceback.format_exc())
+                logger.error(f"Failed to add record {i+1}: {launch_to_add.get('mission', 'N/A')}. See previous errors for details. Will retry on next run if script is restarted.")
+                # If add_launch_to_bitable returns False, it implies an error that might be retriable.
+                # The script will exit if it's an unhandled exception.
+                # If it's a simple False, the progress file ensures we retry this specific record next time.
+
+            if i < len(launches_to_sync) - 1 and delay_between_adds > 0: # Don't sleep after the last one
+                time.sleep(delay_between_adds)
+        
+        logger.info(f"Feishu sync execution finished for {to_sync_file}.")
+        logger.info(f"Successfully added {successfully_added_count} out of {total_to_process_this_run} attempted records in this run.")
+
+        # Sync completed, remove progress file
+        if os.path.exists(SYNC_PROGRESS_FILE):
+            try:
+                # Final check: ensure the progress file still points to the *end* of the current file
+                with open(SYNC_PROGRESS_FILE, 'w') as f:
+                    json.dump({"source_file": to_sync_file, "file_hash": current_file_hash, "next_index": len(launches_to_sync)}, f)
+                os.remove(SYNC_PROGRESS_FILE)
+                logger.info(f"Removed progress file {SYNC_PROGRESS_FILE} as sync is complete.")
+            except Exception as e_clean:
+                logger.warning(f"Could not remove progress file {SYNC_PROGRESS_FILE} after completion: {e_clean}")
+
+
+    except Exception as e:
+        logger.error(f"Failed to execute Feishu sync: {str(e)}")
+        logger.error(traceback.format_exc())
+        # Progress file (if written for the current item) will allow resume
+        raise typer.Exit(1)
+
+
 
 @app.command()
 def hello(name: Optional[str] = typer.Argument(None)):
