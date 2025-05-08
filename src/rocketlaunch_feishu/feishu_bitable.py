@@ -40,7 +40,7 @@ class FeishuBitableHelper:
             raise ValueError("请在.env文件中配置BITABLE_APP_TOKEN和BITABLE_TABLE_ID")
 
 
-    def list_records(self, field_names=None, sort=None, filter=None, page_size=100):
+    def list_records(self, field_names: Optional[List[str]] = None, sort=None, filter=None, page_size=100): # Changed field_names type hint
         from lark_oapi.api.bitable.v1 import SearchAppTableRecordRequest, SearchAppTableRecordRequestBody, Sort, FilterInfo, Condition
 
         request_body_builder = SearchAppTableRecordRequestBody.builder()
@@ -48,8 +48,8 @@ class FeishuBitableHelper:
         if self.view_id:
             request_body_builder = request_body_builder.view_id(self.view_id)
 
-        if field_names:
-            request_body_builder = request_body_builder.field_names(field_names)
+        if field_names: # field_names is now a list of strings
+            request_body_builder = request_body_builder.field_names(json.dumps(field_names)) # SDK expects JSON string here
 
         if sort:
             sort_list = []
@@ -140,15 +140,8 @@ class FeishuBitableHelper:
         except Exception as e:
             logger.error(f"保存搜索到的记录数据失败: {str(e)}")
         
-        # Mimic the structure of a single page response for compatibility,
-        # but with all items.
-        mock_response_data = lark.ޒ.model.BaseModel() # Generic base model for structure
-        mock_response_data.items = all_records
-        mock_response_data.has_more = False
-        mock_response_data.page_token = None
-        mock_response_data.total = len(all_records)
         
-        return mock_response_data
+        return serializable_records
 
 
     def list_table_fields(self, page_size=20):
@@ -197,29 +190,33 @@ class FeishuBitableHelper:
         """
         向多维表格新增一条火箭发射记录
         """
-        status_map_zh = {
-            "Success": "发射成功",
-            "Failure": "发射失败",
-            "Partial Success": "部分成功",
-            "Scheduled": "计划中", 
-            "Unknown": "状态未知",
-            "TBD": "待定",
-        }
+        status_map_zh = { "Success": "发射成功", "Failure": "发射失败", "Partial Success": "部分成功", "Scheduled": "计划中", "Unknown": "状态未知", "TBD": "待定",}
         launch_status_zh = status_map_zh.get(launch.get("status", "Unknown"), "状态未知")
 
-        # Ensure these field names match your Feishu Bitable columns
         fields = {
             "Rocket Model": launch.get("vehicle", ""),
             "发射任务名称": launch.get("mission", ""),
-            "发射位": launch.get("pad_location", "Unknown"), # Use the new combined field
-            "发射日期时间": launch.get("timestamp", 0) * 1000,
+            "发射位": launch.get("pad_location", "Unknown"),
             "Source": launch.get("source_name", "Unknown"),
-            "发射状态": launch_status_zh, # New field
-            "发射任务描述": launch.get("mission_description", "N/A") # New field
+            "发射状态": launch_status_zh,
+            "发射任务描述": launch.get("mission_description", "N/A"),
         }
-        
-        if fields["发射日期时间"] == 0 and launch.get("status") != "Scheduled" and launch.get("status") != "TBD": # Avoid warning for legitimately TBD/Scheduled items with no firm time
-            logger.warning(f"Launch '{launch.get('mission')}' from source '{launch.get('source_name')}' has a zero timestamp. It will be recorded with 0.")
+
+        timestamp_ms_val = launch.get("timestamp_ms") # This is the (potentially negative) ms timestamp
+
+        if timestamp_ms_val is not None:
+            # This will send positive or negative ms timestamp to Feishu
+            fields["发射日期时间"] = timestamp_ms_val 
+        else:
+            # If timestamp_ms is None (e.g., parsing failed completely, or explicitly TBD and set to None)
+            # We don't add "发射日期时间" to the fields dict.
+            # Feishu will treat it as empty/null for that record's date field.
+            logger.info(f"No valid timestamp_ms for mission '{launch.get('mission', 'N/A')}'. '发射日期时间' field will be empty.")
+
+        # Warning for timestamp 0 (1970-01-01 UTC), if it's not TBD/Scheduled.
+        # Negative timestamps are now considered valid for pre-1970 dates.
+        if fields.get("发射日期时间") == 0 and launch.get("status") not in ["Scheduled", "TBD"]:
+            logger.warning(f"Launch '{launch.get('mission')}' has a zero timestamp (1970-01-01 UTC).")
 
         request = CreateAppTableRecordRequest.builder() \
             .app_token(self.app_token) \

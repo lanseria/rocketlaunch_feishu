@@ -133,7 +133,7 @@ os.makedirs("data/raw", exist_ok=True)  # From download_html_for_source or fetch
 def download_html_for_source(
     source: LaunchSource, 
     all_pages: bool = False,
-    max_pages_nextspaceflight: int = 50 
+    max_pages_nextspaceflight: int = 236 
 ) -> str:
     # ... (implementation from previous answer, ensuring it saves to data/html/{source}_latest.html) ...
     # This function now just downloads and returns the path to the raw HTML file(s).
@@ -222,7 +222,7 @@ def generate_file_hash(filepath):
 def fetch_data(
     source: LaunchSource = typer.Option(..., help="The data source to fetch from."), # Made source mandatory
     all_pages: bool = typer.Option(False, "--all-pages/--single-page", help="For NextSpaceflight: fetch all pages."),
-    max_pages_nextspaceflight: int = typer.Option(50, help="Safety limit for 'all_pages' with NextSpaceflight."),
+    max_pages_nextspaceflight: int = typer.Option(236, help="Safety limit for 'all_pages' with NextSpaceflight."),
     output_file: Optional[str] = typer.Option(None, help="Override default output JSON file path for processed data.")
 ):
     """Downloads HTML from the source, parses it, and saves the structured launch data to a JSON file."""
@@ -280,7 +280,6 @@ def fetch_data(
         logger.error(f"Data fetching process failed: {str(e)}")
         logger.error(traceback.format_exc())
         raise typer.Exit(1)
-
 @app.command()
 def prepare_feishu_sync(
     processed_file: str = typer.Option(..., help="Path to the JSON file containing processed launch data (from fetch-data)."),
@@ -297,14 +296,13 @@ def prepare_feishu_sync(
 
         if not processed_launches:
             logger.info(f"No launches in {processed_file} to prepare for sync. Exiting.")
-            # Create an empty 'to_sync' file if an output is specified.
             if output_to_sync_file:
+                # Ensure directory exists before writing empty file
+                os.makedirs(os.path.dirname(output_to_sync_file), exist_ok=True)
                 with open(output_to_sync_file, 'w', encoding='utf-8') as f_empty:
                     json.dump([], f_empty)
             return
 
-        # Determine source from the first record (assuming all records in file are from same source)
-        # This is a simplification; a more robust way would be to store source in metadata or ensure homogeneity.
         source_value_from_file = processed_launches[0].get('source_name')
         if not source_value_from_file:
             logger.error("Could not determine source from processed file. 'source_name' missing in records.")
@@ -312,60 +310,102 @@ def prepare_feishu_sync(
         
         logger.info(f"Preparing Feishu sync for data from file: {processed_file} (Source: {source_value_from_file})")
 
-        valid_launches_for_sync = [
-            l for l in processed_launches 
-            if l.get('timestamp', 0) > 0 or l.get('status') in ["Scheduled", "TBD"]
-        ]
+        # --- MODIFIED LOGIC HERE ---
+        valid_launches_for_sync = []
+        for l_item in processed_launches:
+            ts_ms = l_item.get('timestamp_ms') # Get the millisecond timestamp
+            status = l_item.get('status')
+
+            # A launch is valid for sync if:
+            # 1. It has a timestamp_ms (None means it couldn't be parsed or is truly TBD and handled as None)
+            #    OR
+            # 2. Its status indicates it's scheduled or TBD (even if timestamp_ms is None or 0 for now)
+            # The check `ts_ms is not None` correctly handles positive, negative, and zero timestamps.
+            # `None` means we don't have a concrete time for it from parsing.
+            if ts_ms is not None or status in ["Scheduled", "TBD"]:
+                valid_launches_for_sync.append(l_item)
+        # --- END OF MODIFIED LOGIC ---
+        
         if not valid_launches_for_sync:
-            logger.info("No launches with valid timestamps (or valid TBD/Scheduled status) to process.")
+            logger.info("No launches with valid timestamps (timestamp_ms is not None) or a 'Scheduled'/'TBD' status to process.")
             if output_to_sync_file: # Create empty if specified
+                os.makedirs(os.path.dirname(output_to_sync_file), exist_ok=True)
                 with open(output_to_sync_file, 'w', encoding='utf-8') as f_empty:
                     json.dump([], f_empty)
             return
         
-        actual_timestamps = [l['timestamp'] for l in valid_launches_for_sync if l['timestamp'] > 0]
-        oldest_timestamp_in_scrape = min(actual_timestamps) if actual_timestamps else 0
+        # For oldest_timestamp_in_scrape, we should consider only non-None and convert to seconds for the logic
+        # that multiplies by 1000 later. Or, more simply, keep it in ms for the filter.
+        # Feishu filter expects milliseconds directly for "ExactDate".
+        actual_timestamps_ms = [l.get('timestamp_ms') for l in valid_launches_for_sync if l.get('timestamp_ms') is not None]
+        
+        # oldest_timestamp_in_scrape should be in milliseconds for the Feishu filter
+        oldest_timestamp_ms_in_scrape = min(actual_timestamps_ms) if actual_timestamps_ms else 0 
+        # If all are None, oldest_timestamp_ms_in_scrape will be 0.
+        # If 0 is a valid timestamp (1970-01-01), this is fine.
+        # If you want to avoid filtering by time if only None timestamps exist, adjust this.
 
         filter_for_feishu = {"conditions": [], "conjunction": "and"}
         filter_for_feishu["conditions"].append({
             "field_name": "Source", "operator": "is", "value": [source_value_from_file]
         })
-        if oldest_timestamp_in_scrape > 0: 
-            filter_for_feishu["conditions"].append({
+
+        # Only add time filter if we have a meaningful oldest timestamp.
+        # If oldest_timestamp_ms_in_scrape is 0 AND actual_timestamps_ms was empty (meaning all were None or TBD with no time),
+        # then we might not want to filter by time `isGreaterOrEqual` 0, as that's 1970-01-01.
+        # However, if 0 is a legitimate earliest timestamp from your data, then filtering is correct.
+        # Let's assume if actual_timestamps_ms is not empty, oldest_timestamp_ms_in_scrape is valid (can be negative, 0, or positive).
+        if actual_timestamps_ms: # Only add date filter if there were actual timestamps
+             filter_for_feishu["conditions"].append({
                 "field_name": "发射日期时间", "operator": "isGreaterOrEqual", 
-                "value": ["ExactDate", str(oldest_timestamp_in_scrape * 1000)] 
+                "value": ["ExactDate", str(oldest_timestamp_ms_in_scrape)] # Use ms directly
             })
+        else:
+            logger.info("No actual timestamps found in valid launches; Feishu query will not filter by date.")
+
         
         helper = FeishuBitableHelper()
+        # fields_to_fetch in helper.list_records is now List[str]
         fields_to_fetch = ["发射日期时间", "Source", "发射任务名称"]
-        bitable_records_response = helper.list_records(filter=filter_for_feishu, field_names=json.dumps(fields_to_fetch), page_size=500)
+        bitable_records_response = helper.list_records(
+            filter=filter_for_feishu, 
+            field_names=fields_to_fetch, # Pass as Python list
+            page_size=500
+        )
         
         existing_records_tuples = set()
         if bitable_records_response and bitable_records_response.items:
-            # ... (same logic as before to populate existing_records_tuples) ...
             for record in bitable_records_response.items:
-                ts_millis = record.fields.get("发射日期时间"); rec_source_field = record.fields.get("Source"); rec_mission = record.fields.get("发射任务名称", "")
-                rec_source_val = "Unknown"; Z = isinstance
-                if Z(rec_source_field, str): rec_source_val = rec_source_field
-                elif Z(rec_source_field, list) and rec_source_field: rec_source_val = rec_source_field[0]
-                existing_records_tuples.add((int(ts_millis / 1000) if ts_millis else 0, rec_source_val, rec_mission.strip().lower()))
+                ts_millis_from_feishu = record.fields.get("发射日期时间") 
+                rec_source_field = record.fields.get("Source") 
+                rec_mission = record.fields.get("发射任务名称", "")
+                rec_source_val = "Unknown"
+                if isinstance(rec_source_field, str): rec_source_val = rec_source_field
+                elif isinstance(rec_source_field, list) and rec_source_field: rec_source_val = rec_source_field[0]
+                existing_records_tuples.add(
+                    (ts_millis_from_feishu if ts_millis_from_feishu is not None else 0, 
+                    rec_source_val, 
+                    rec_mission.strip().lower())
+                )
             logger.info(f"Found {len(existing_records_tuples)} existing records in Feishu matching criteria.")
         else:
             logger.info("No existing records found in Feishu matching criteria or failed to fetch.")
             
         new_launches_to_add_to_feishu = []
-        for launch in valid_launches_for_sync:
-            current_launch_tuple = (launch['timestamp'], launch['source_name'], launch.get('mission', "").strip().lower())
+        for launch_item in valid_launches_for_sync:
+            current_launch_tuple = (
+                launch_item.get('timestamp_ms', 0), # Use 0 if 'timestamp_ms' is None for consistency with above
+                launch_item.get('source_name'),
+                launch_item.get('mission', "").strip().lower()
+            )
             if current_launch_tuple not in existing_records_tuples:
-                new_launches_to_add_to_feishu.append(launch)
+                new_launches_to_add_to_feishu.append(launch_item)
         
-        if not new_launches_to_add_to_feishu:
-            logger.info("No new launch data to be added to Feishu.")
-        else:
-            new_launches_to_add_to_feishu.sort(key=lambda x: x['timestamp'] if x['timestamp'] > 0 else float('inf'))
-            logger.info(f"Prepared {len(new_launches_to_add_to_feishu)} records for Feishu sync.")
+        if new_launches_to_add_to_feishu:
+            new_launches_to_add_to_feishu.sort(key=lambda x: x.get('timestamp_ms') if x.get('timestamp_ms') is not None else float('inf'))
+            
+        logger.info(f"Prepared {len(new_launches_to_add_to_feishu)} records for Feishu sync.")
 
-        # Save the 'to_sync' list to a new file
         if output_to_sync_file is None:
             base_processed_file_name = os.path.splitext(os.path.basename(processed_file))[0]
             output_to_sync_file = f"{TO_SYNC_DATA_DIR}/{base_processed_file_name}_to_sync.json"
@@ -484,6 +524,96 @@ def execute_feishu_sync(
         raise typer.Exit(1)
 
 
+@app.command()
+def test_list_records(
+    table_id_override: Optional[str] = typer.Option(None, help="Override BITABLE_TABLE_ID from .env for this test."),
+    view_id_override: Optional[str] = typer.Option(None, help="Override BITABLE_VIEW_ID from .env for this test."),
+    filter_json: Optional[str] = typer.Option(None, help="JSON string for the filter conditions (e.g., '{\"conditions\":[{\"field_name\":\"Source\",\"operator\":\"is\",\"value\":[\"nextspaceflight.com\"]}]}')"),
+    fields_json: Optional[str] = typer.Option(None, help="JSON string for field_names to retrieve (e.g., '[\"发射任务名称\", \"Source\"]')"),
+    page_size: int = typer.Option(20, help="Number of records to retrieve per page (max 500 for search)."),
+    max_total_records: int = typer.Option(100, help="Maximum total records to fetch for this test to avoid large dumps.")
+):
+    """Tests the FeishuBitableHelper.list_records() method by fetching some records."""
+    logger.info("--- Testing FeishuBitableHelper.list_records() ---")
+    try:
+        helper = FeishuBitableHelper()
+
+        # Override table_id and view_id if provided via CLI options
+        if table_id_override:
+            logger.info(f"Overriding table_id with: {table_id_override}")
+            helper.table_id = table_id_override
+        if view_id_override:
+            logger.info(f"Overriding view_id with: {view_id_override}")
+            helper.view_id = view_id_override
+        
+        logger.info(f"Using App Token: ...{helper.app_token[-6:] if helper.app_token else 'N/A'}") # Show last 6 chars
+        logger.info(f"Using Table ID: {helper.table_id}")
+        logger.info(f"Using View ID: {helper.view_id if helper.view_id else 'Not set (will use default view)'}")
+
+
+        parsed_filter = None
+        if filter_json:
+            try:
+                parsed_filter = json.loads(filter_json)
+                logger.info(f"Using custom filter: {json.dumps(parsed_filter, indent=2)}")
+            except json.JSONDecodeError as e:
+                logger.error(f"Invalid JSON for filter: {e}")
+                raise typer.Exit(1)
+
+        parsed_fields_list_for_helper = None # This will be List[str] or None
+        if fields_json:
+            try:
+                parsed_fields_list_for_helper = json.loads(fields_json)
+                if not isinstance(parsed_fields_list_for_helper, list) or \
+                   not all(isinstance(item, str) for item in parsed_fields_list_for_helper):
+                    logger.error("Fields JSON must be a list of strings (e.g., '[\"Field A\", \"Field B\"]').")
+                    raise typer.Exit(1)
+                logger.info(f"Requesting specific fields: {parsed_fields_list_for_helper}")
+            except json.JSONDecodeError as e:
+                logger.error(f"Invalid JSON for fields: {e}")
+                raise typer.Exit(1)
+        
+        logger.info(f"Calling helper.list_records with page_size={page_size}...")
+        records_response_data = helper.list_records(
+            filter=parsed_filter, 
+            field_names=parsed_fields_list_for_helper, # Pass the Python list
+            page_size=page_size
+        )
+
+        if records_response_data and hasattr(records_response_data, 'items') and records_response_data.items:
+            all_items = records_response_data.items
+            logger.info(f"Successfully retrieved {len(all_items)} total records matching criteria.")
+            
+            records_to_display = all_items[:max_total_records]
+            
+            if not records_to_display:
+                logger.info("No records to display (possibly empty or all filtered out by max_total_records).")
+            else:
+                logger.info(f"Displaying first {len(records_to_display)} records (or less if total < max_total_records):")
+                for i, record in enumerate(records_to_display):
+                    record_id = getattr(record, 'record_id', 'N/A')
+                    fields = getattr(record, 'fields', {})
+                    logger.info(f"--- Record {i+1} (Record ID: {record_id}) ---")
+                    logger.info(json.dumps(fields, indent=2, ensure_ascii=False))
+            
+            if len(all_items) > max_total_records:
+                logger.info(f"... and {len(all_items) - max_total_records} more records not displayed due to max_total_records limit.")
+
+        elif records_response_data and hasattr(records_response_data, 'items') and not records_response_data.items:
+            logger.info("Successfully called API, but no records were returned (list is empty).")
+        else:
+            logger.error("Failed to retrieve records or response was not in expected format. Check previous logs from FeishuBitableHelper.")
+
+    except ValueError as ve: # Catch ValueError from FeishuBitableHelper init (missing env vars)
+        logger.error(f"Configuration error: {ve}")
+        logger.error("Please ensure FEISHU_APP_ID, FEISHU_APP_SECRET, BITABLE_APP_TOKEN, BITABLE_TABLE_ID are set in your .env file.")
+        raise typer.Exit(1)
+    except Exception as e:
+        logger.error(f"An error occurred during test_list_records: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise typer.Exit(1)
+    finally:
+        logger.info("--- test_list_records() finished ---")
 
 @app.command()
 def hello(name: Optional[str] = typer.Argument(None)):
