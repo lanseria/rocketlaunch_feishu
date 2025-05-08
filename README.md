@@ -24,7 +24,24 @@ docker compose up -d
 
 手动触发数据同步：
 ```bash
-cli sync-all
+rocketlaunch-feishu sync-all
+rocketlaunch-feishu sync-launches --source "nextspaceflight.com"
+```
+
+同步 nextspaceflight.com 的所有历史页面：
+```bash
+rocketlaunch-feishu sync-launches --source "nextspaceflight.com" --all-pages
+```
+或者，限制最大页数：
+```bash
+rocketlaunch-feishu sync-launches --source "nextspaceflight.com" --all-pages --max-pages-nextspaceflight 1
+```
+
+## 测试
+
+```bash
+python -m pytest tests/test_html_parser.py
+python -m pytest tests/test_html_parser_with_files.py
 ```
 
 ## 项目结构

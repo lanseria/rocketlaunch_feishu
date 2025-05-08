@@ -3,6 +3,7 @@
     "bboxes",
     "dify",
     "dotenv",
+    "Feishu",
     "genai",
     "imdecode",
     "imwrite"
