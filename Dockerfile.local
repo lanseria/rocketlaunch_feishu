@@ -33,4 +33,4 @@ RUN pip install --upgrade pip -i https://pypi.tuna.tsinghua.edu.cn/simple
 # 安装项目依赖（推荐使用 PEP 517/518 标准，支持 pyproject.toml）
 RUN pip install -e . -i https://pypi.tuna.tsinghua.edu.cn/simple
 
-ENTRYPOINT ["cli", "schedule-daily"]
+ENTRYPOINT ["rocketlaunch-feishu", "schedule-daily"]

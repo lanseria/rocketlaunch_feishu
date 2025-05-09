@@ -31,15 +31,13 @@ rocketlaunch-feishu sync-launches --source "nextspaceflight.com"
 Fetch data from a source:
 ```bash
 rocketlaunch-feishu fetch-data --source "nextspaceflight.com" --all-pages
+rocketlaunch-feishu fetch-data --source "nextspaceflight.com"
 # This will create a file like data/processed_launches/nextspaceflight.com_processed_all_pages.json
-```
-Or specify an output file:
-```bash
-rocketlaunch-feishu fetch-data --source "rocketlaunch.live" --output-file my_rocket_data.json
 ```
 Prepare data for Feishu sync (compare with Feishu):
 ```bash
 rocketlaunch-feishu prepare-feishu-sync --processed-file data/processed_launches/nextspaceflight_com_processed_all_pages.json
+rocketlaunch-feishu prepare-feishu-sync --processed-file data/processed_launches/nextspaceflight_com_processed.json
 # This will create a file like data/to_sync_launches/nextspaceflight.com_processed_all_pages_to_sync.json
 ```
 Or specify an output file:
@@ -49,10 +47,12 @@ rocketlaunch-feishu prepare-feishu-sync --processed-file my_rocket_data.json --o
 Execute the sync to Feishu (with resume capability):
 ```bash
 rocketlaunch-feishu execute-feishu-sync --to-sync-file "data/to_sync_launches/nextspaceflight_com_processed_all_pages_to_sync.json" --delay-between-adds 0.5
+rocketlaunch-feishu execute-feishu-sync --to-sync-file "data/to_sync_launches/nextspaceflight_com_processed_to_sync.json" --delay-between-adds 0.5 --pre-add-check
 ```
 运行基本测试 (使用 .env 中的配置，获取前20条记录，最多显示100条):
 ```bash
 rocketlaunch-feishu test-list-records
+rocketlaunch-feishu test-list-records --filter-json '{"conditions":[{"field_name":"发射日期时间","operator":"is","value":["ExactDate","1743443160000"]}],"conjunction":"and"}'
 ```
 ## 测试
 

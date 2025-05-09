@@ -280,6 +280,7 @@ def fetch_data(
         logger.error(f"Data fetching process failed: {str(e)}")
         logger.error(traceback.format_exc())
         raise typer.Exit(1)
+
 @app.command()
 def prepare_feishu_sync(
     processed_file: str = typer.Option(..., help="Path to the JSON file containing processed launch data (from fetch-data)."),
@@ -356,7 +357,7 @@ def prepare_feishu_sync(
         # However, if 0 is a legitimate earliest timestamp from your data, then filtering is correct.
         # Let's assume if actual_timestamps_ms is not empty, oldest_timestamp_ms_in_scrape is valid (can be negative, 0, or positive).
         if actual_timestamps_ms: # Only add date filter if there were actual timestamps
-             filter_for_feishu["conditions"].append({
+            filter_for_feishu["conditions"].append({
                 "field_name": "发射日期时间", "operator": "isGreaterOrEqual", 
                 "value": ["ExactDate", str(oldest_timestamp_ms_in_scrape)] # Use ms directly
             })
@@ -424,7 +425,8 @@ def prepare_feishu_sync(
 @app.command()
 def execute_feishu_sync(
     to_sync_file: str = typer.Option(..., help="Path to the JSON file containing data to be synced (from prepare-feishu-sync)."),
-    delay_between_adds: float = typer.Option(0.2, help="Delay in seconds between adding each record to Feishu.")
+    delay_between_adds: float = typer.Option(0.2, help="Delay in seconds between adding each record to Feishu."),
+    enable_pre_add_check: bool = typer.Option(False, "--pre-add-check/--no-pre-add-check", help="Enable an additional check for record existence before each add operation.") # New option
 ):
     """Reads a 'to-sync' JSON file and adds records to Feishu, with resume capability."""
     try:
@@ -437,90 +439,151 @@ def execute_feishu_sync(
 
         if not launches_to_sync:
             logger.info(f"No records in {to_sync_file} to sync. Exiting.")
-            if os.path.exists(SYNC_PROGRESS_FILE): # Clean up progress if to_sync is empty
+            # ... (progress file cleanup logic remains the same) ...
+            if os.path.exists(SYNC_PROGRESS_FILE):
                 try:
-                    with open(SYNC_PROGRESS_FILE, 'r') as pf:
-                        progress_data = json.load(pf)
+                    with open(SYNC_PROGRESS_FILE, 'r') as pf: progress_data = json.load(pf)
                     if progress_data.get("source_file") == to_sync_file:
                         os.remove(SYNC_PROGRESS_FILE)
                         logger.info(f"Removed progress file {SYNC_PROGRESS_FILE} as sync is complete/empty.")
-                except: pass # Ignore errors during cleanup
+                except Exception: pass 
             return
 
         start_index = 0
         current_file_hash = generate_file_hash(to_sync_file)
 
-        # Check for progress file
+        # ... (resume logic using SYNC_PROGRESS_FILE remains the same) ...
         if os.path.exists(SYNC_PROGRESS_FILE):
             try:
-                with open(SYNC_PROGRESS_FILE, 'r') as f:
-                    progress = json.load(f)
-                # Check if progress file is for the *exact* same to_sync_file content
+                with open(SYNC_PROGRESS_FILE, 'r') as f: progress = json.load(f)
                 if progress.get("source_file") == to_sync_file and progress.get("file_hash") == current_file_hash:
                     start_index = progress.get("next_index", 0)
                     logger.info(f"Resuming sync from index {start_index} for file {to_sync_file}.")
                 else:
-                    logger.info(f"Progress file found but for a different file/content ({progress.get('source_file')}, hash mismatch). Starting sync from beginning for {to_sync_file}.")
-                    # Overwrite progress file later if we start
-            except json.JSONDecodeError:
-                logger.warning(f"Could not parse progress file {SYNC_PROGRESS_FILE}. Starting sync from beginning.")
+                    logger.info(f"Progress file mismatch. Starting sync from beginning for {to_sync_file}.")
             except Exception as e:
                 logger.warning(f"Error reading progress file {SYNC_PROGRESS_FILE}: {e}. Starting sync from beginning.")
         
         if start_index >= len(launches_to_sync):
-            logger.info(f"All records from {to_sync_file} seem to be already processed according to progress. Exiting.")
-            if os.path.exists(SYNC_PROGRESS_FILE): os.remove(SYNC_PROGRESS_FILE) # Clean up
+            logger.info(f"All records from {to_sync_file} seem to be already processed. Exiting.")
+            if os.path.exists(SYNC_PROGRESS_FILE): os.remove(SYNC_PROGRESS_FILE)
             return
 
         helper = FeishuBitableHelper()
         successfully_added_count = 0
+        skipped_due_to_pre_check = 0 # Counter for skipped records
         total_to_process_this_run = len(launches_to_sync) - start_index
 
         logger.info(f"Starting Feishu sync. Total records in file: {len(launches_to_sync)}. Processing from index: {start_index}.")
+        if enable_pre_add_check:
+            logger.info("Pre-add existence check is ENABLED. This will increase API calls and processing time.")
 
         for i in range(start_index, len(launches_to_sync)):
             launch_to_add = launches_to_sync[i]
             
-            # Save progress *before* attempting to add
+            # Save progress *before* attempting to add or check
             try:
                 with open(SYNC_PROGRESS_FILE, 'w') as f:
                     json.dump({"source_file": to_sync_file, "file_hash": current_file_hash, "next_index": i}, f)
             except Exception as e_prog:
-                logger.error(f"Critical error: Could not write to progress file {SYNC_PROGRESS_FILE}: {e_prog}. Aborting to prevent data loss on resume.")
+                logger.error(f"Critical error writing progress file {SYNC_PROGRESS_FILE}: {e_prog}. Aborting.")
                 raise typer.Exit(1)
 
-            logger.info(f"Attempting to add record {i+1}/{len(launches_to_sync)}: {launch_to_add.get('mission', 'N/A')}")
-            result = helper.add_launch_to_bitable(launch_to_add)
-            if result:
-                successfully_added_count += 1
-            else:
-                logger.error(f"Failed to add record {i+1}: {launch_to_add.get('mission', 'N/A')}. See previous errors for details. Will retry on next run if script is restarted.")
-                # If add_launch_to_bitable returns False, it implies an error that might be retriable.
-                # The script will exit if it's an unhandled exception.
-                # If it's a simple False, the progress file ensures we retry this specific record next time.
+            record_already_exists = False
+            if enable_pre_add_check:
+                # --- Pre-add check logic ---
+                logger.debug(f"Pre-add check for: {launch_to_add.get('mission', 'N/A')}")
+                timestamp_ms_to_check = launch_to_add.get('timestamp_ms')
+                source_to_check = launch_to_add.get('source_name')
+                mission_to_check = launch_to_add.get('mission', "").strip().lower()
 
-            if i < len(launches_to_sync) - 1 and delay_between_adds > 0: # Don't sleep after the last one
+                if timestamp_ms_to_check is None or not source_to_check: # Cannot reliably check without these
+                    logger.warning(f"Skipping pre-add check for record {i+1} due to missing timestamp_ms or source_name.")
+                else:
+                    # Construct filter for this specific record
+                    # Using 'is' for exact match. Note: timestamp_ms_to_check can be negative.
+                    # If timestamp_ms_to_check is 0 (epoch), it's a valid timestamp.
+                    check_filter = {
+                        "conditions": [
+                            {"field_name": "发射日期时间", "operator": "is", "value": ["ExactDate", str(timestamp_ms_to_check)]},
+                        ],
+                        "conjunction": "and"
+                    }
+                    try:
+                        # Only need to know if any record exists, so page_size 1 is fine.
+                        # We only need record_id or any field to confirm existence.
+                        existing_check_response = helper.list_records(
+                            filter=check_filter, 
+                            field_names=None, # Requesting minimal field
+                            page_size=1
+                        )
+                        if len(existing_check_response) >= 1:
+                            record_already_exists = True
+                            logger.info(f"Record {i+1} '{launch_to_add.get('mission', 'N/A')}' already exists in Feishu (based on pre-add check). Skipping.")
+                            skipped_due_to_pre_check += 1
+                    except Exception as e_check:
+                        # If the check itself fails, log it but proceed with the add attempt (conservative approach)
+                        # as the record might not exist and the check failed for other reasons (e.g., temporary API issue).
+                        logger.error(f"Pre-add check failed for record {i+1}: {e_check}. Will attempt to add.")
+                # --- End of Pre-add check logic ---
+
+            if record_already_exists:
+                # If skipped by pre-add check, we still count it as "processed" for the progress file's next_index,
+                # but not as "successfully_added_count".
+                # The progress file update to 'next_index: i' already handles moving to the next item.
+                # We just don't call add_launch_to_bitable.
+                pass
+            else:
+                logger.info(f"Attempting to add record {i+1}/{len(launches_to_sync)}: {launch_to_add.get('mission', 'N/A')}")
+                result = helper.add_launch_to_bitable(launch_to_add)
+                if result:
+                    successfully_added_count += 1
+                else:
+                    logger.error(f"Failed to add record {i+1}: {launch_to_add.get('mission', 'N/A')}. Will retry on next run if script restarts.")
+            
+            # Update progress file to indicate this item is done, and next is i+1
+            try:
+                with open(SYNC_PROGRESS_FILE, 'w') as f:
+                    json.dump({"source_file": to_sync_file, "file_hash": current_file_hash, "next_index": i + 1}, f)
+            except Exception as e_prog: # Should be very rare if first write succeeded
+                logger.error(f"Critical error updating progress file {SYNC_PROGRESS_FILE} after processing item {i}: {e_prog}.")
+                # Decide if to abort or continue. If this fails, resume might process last item again.
+                # For now, log and continue.
+
+
+            if i < len(launches_to_sync) - 1 and delay_between_adds > 0:
                 time.sleep(delay_between_adds)
         
         logger.info(f"Feishu sync execution finished for {to_sync_file}.")
-        logger.info(f"Successfully added {successfully_added_count} out of {total_to_process_this_run} attempted records in this run.")
+        if enable_pre_add_check:
+            logger.info(f"Skipped {skipped_due_to_pre_check} records due to pre-add existence check.")
+        logger.info(f"Successfully added {successfully_added_count} records in this run.")
+        logger.info(f"Total records processed (added or skipped by pre-check) in this run: {skipped_due_to_pre_check + successfully_added_count} out of {total_to_process_this_run} pending.")
 
-        # Sync completed, remove progress file
+
+        # Sync completed (or all items in the file iterated through), remove/update progress file
         if os.path.exists(SYNC_PROGRESS_FILE):
             try:
-                # Final check: ensure the progress file still points to the *end* of the current file
-                with open(SYNC_PROGRESS_FILE, 'w') as f:
-                    json.dump({"source_file": to_sync_file, "file_hash": current_file_hash, "next_index": len(launches_to_sync)}, f)
-                os.remove(SYNC_PROGRESS_FILE)
-                logger.info(f"Removed progress file {SYNC_PROGRESS_FILE} as sync is complete.")
-            except Exception as e_clean:
-                logger.warning(f"Could not remove progress file {SYNC_PROGRESS_FILE} after completion: {e_clean}")
+                # Check if the progress file's next_index indeed points to the end of the list
+                is_fully_completed = False
+                with open(SYNC_PROGRESS_FILE, 'r') as f_prog_check:
+                    final_progress = json.load(f_prog_check)
+                if final_progress.get("source_file") == to_sync_file and \
+                final_progress.get("file_hash") == current_file_hash and \
+                final_progress.get("next_index") == len(launches_to_sync):
+                    is_fully_completed = True
 
+                if is_fully_completed:
+                    os.remove(SYNC_PROGRESS_FILE)
+                    logger.info(f"Removed progress file {SYNC_PROGRESS_FILE} as sync is fully complete.")
+                else:
+                    logger.warning(f"Progress file {SYNC_PROGRESS_FILE} indicates sync for {to_sync_file} is not fully complete (next_index: {final_progress.get('next_index')}, total: {len(launches_to_sync)}). Not removing.")
+            except Exception as e_clean:
+                logger.warning(f"Could not verify or remove progress file {SYNC_PROGRESS_FILE} after completion: {e_clean}")
 
     except Exception as e:
         logger.error(f"Failed to execute Feishu sync: {str(e)}")
         logger.error(traceback.format_exc())
-        # Progress file (if written for the current item) will allow resume
         raise typer.Exit(1)
 
 
@@ -565,7 +628,7 @@ def test_list_records(
             try:
                 parsed_fields_list_for_helper = json.loads(fields_json)
                 if not isinstance(parsed_fields_list_for_helper, list) or \
-                   not all(isinstance(item, str) for item in parsed_fields_list_for_helper):
+                not all(isinstance(item, str) for item in parsed_fields_list_for_helper):
                     logger.error("Fields JSON must be a list of strings (e.g., '[\"Field A\", \"Field B\"]').")
                     raise typer.Exit(1)
                 logger.info(f"Requesting specific fields: {parsed_fields_list_for_helper}")
@@ -614,6 +677,112 @@ def test_list_records(
         raise typer.Exit(1)
     finally:
         logger.info("--- test_list_records() finished ---")
+
+@app.command()
+def run_daily_sync_flow( # Renamed to reflect it runs the flow once
+    source: LaunchSource = typer.Option(LaunchSource.NEXTSPACEFLIGHT, help="The data source to sync."),
+    fetch_all_pages: bool = typer.Option(False, "--all-pages/--single-page", help="For NextSpaceflight: fetch all pages during fetch-data."),
+    max_pages_nsf: int = typer.Option(50, help="Max pages for NextSpaceflight if --all-pages is enabled."),
+    execute_delay: float = typer.Option(0.5, help="Delay between adds during execute-feishu-sync."),
+    execute_pre_check: bool = typer.Option(True, "--pre-add-check/--no-pre-add-check", help="Enable pre-add check during execute-feishu-sync.") # Defaulting to True for safety in scheduled task
+):
+    """
+    Runs the full data syncronization flow once: fetch, prepare, and execute.
+    This command is intended to be called by an external scheduler (e.g., cron).
+    """
+    logger.info(f"--- Starting Daily Sync Flow for Source: {source.value} ---")
+    
+    # --- Step 1: Fetch Data ---
+    logger.info("Step 1: Fetching data...")
+    # Determine default output file for fetch_data based on source and all_pages
+    safe_source_name = "".join(c if c.isalnum() else "_" for c in source.value)
+    all_pages_suffix = "_all_pages" if fetch_all_pages and source == LaunchSource.NEXTSPACEFLIGHT else ""
+    default_processed_file = f"{PROCESSED_DATA_DIR}/{safe_source_name}_processed{all_pages_suffix}.json"
+    
+    try:
+        # It's cleaner to call the function directly rather than subprocess or app.invoke for internal calls
+        fetch_data(
+            source=source, 
+            all_pages=fetch_all_pages, 
+            max_pages_nextspaceflight=max_pages_nsf,
+            output_file=default_processed_file # Pass the determined output file
+        )
+        logger.info(f"Fetch data successful. Output: {default_processed_file}")
+    except typer.Exit as e: # Catch Exit from fetch_data
+        if e.exit_code == 0:
+            logger.info("Fetch data completed (possibly with non-error exit).")
+        else:
+            logger.error(f"Fetch data step failed with exit code {e.exit_code}. Aborting daily sync flow.")
+            raise # Re-raise to stop the flow
+    except Exception as e:
+        logger.error(f"Fetch data step failed: {e}")
+        logger.error(traceback.format_exc())
+        raise typer.Exit(1) # Exit with error
+
+    # Check if the processed file was created and has content
+    if not os.path.exists(default_processed_file) or os.path.getsize(default_processed_file) == 0:
+        logger.warning(f"Processed file {default_processed_file} is missing or empty after fetch step. Sync flow might not proceed meaningfully.")
+        # Depending on requirements, you might want to exit here or let prepare_feishu_sync handle empty input.
+        # prepare_feishu_sync already handles empty input gracefully.
+
+    # --- Step 2: Prepare Feishu Sync ---
+    logger.info("Step 2: Preparing data for Feishu sync...")
+    base_processed_file_name = os.path.splitext(os.path.basename(default_processed_file))[0]
+    default_to_sync_file = f"{TO_SYNC_DATA_DIR}/{base_processed_file_name}_to_sync.json"
+
+    try:
+        prepare_feishu_sync(
+            processed_file=default_processed_file,
+            output_to_sync_file=default_to_sync_file # Pass the determined output file
+        )
+        logger.info(f"Prepare Feishu sync successful. Output: {default_to_sync_file}")
+    except typer.Exit as e:
+        if e.exit_code == 0:
+            logger.info("Prepare feishu sync completed (possibly with non-error exit).")
+        else:
+            logger.error(f"Prepare Feishu sync step failed with exit code {e.exit_code}. Aborting daily sync flow.")
+            raise
+    except Exception as e:
+        logger.error(f"Prepare Feishu sync step failed: {e}")
+        logger.error(traceback.format_exc())
+        raise typer.Exit(1)
+
+    # Check if the to_sync file was created
+    if not os.path.exists(default_to_sync_file):
+        logger.warning(f"'To-sync' file {default_to_sync_file} was not created. This might be normal if no new records were found.")
+        # execute_feishu_sync handles empty/missing to_sync file.
+
+    # --- Step 3: Execute Feishu Sync ---
+    logger.info("Step 3: Executing Feishu sync...")
+    try:
+        # Only proceed if the to_sync_file actually exists and has content,
+        # or let execute_feishu_sync handle it (it does log if file is empty/missing).
+        if os.path.exists(default_to_sync_file) and os.path.getsize(default_to_sync_file) > 0:
+            execute_feishu_sync(
+                to_sync_file=default_to_sync_file,
+                delay_between_adds=execute_delay,
+                enable_pre_add_check=execute_pre_check
+            )
+            logger.info("Execute Feishu sync step completed.")
+        elif os.path.exists(default_to_sync_file) and os.path.getsize(default_to_sync_file) == 0:
+            logger.info(f"'To-sync' file {default_to_sync_file} is empty. No records to execute.")
+            # Clean up progress file if it was for an empty to_sync file (execute_feishu_sync handles this)
+            execute_feishu_sync(to_sync_file=default_to_sync_file) # Call it to trigger its empty file handling
+        else:
+            logger.info(f"'To-sync' file {default_to_sync_file} not found or inaccessible. Skipping execute step.")
+
+    except typer.Exit as e:
+        if e.exit_code == 0:
+            logger.info("Execute feishu sync completed (possibly with non-error exit).")
+        else:
+            logger.error(f"Execute Feishu sync step failed with exit code {e.exit_code}.")
+            # No need to re-raise, as this is the last step. Error is already logged.
+    except Exception as e:
+        logger.error(f"Execute Feishu sync step failed: {e}")
+        logger.error(traceback.format_exc())
+        # No need to re-raise, as this is the last step. Error is already logged.
+
+    logger.info(f"--- Daily Sync Flow for Source: {source.value} Finished ---")
 
 @app.command()
 def hello(name: Optional[str] = typer.Argument(None)):
