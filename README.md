@@ -54,6 +54,10 @@ rocketlaunch-feishu execute-feishu-sync --to-sync-file "data/to_sync_launches/ne
 rocketlaunch-feishu test-list-records
 rocketlaunch-feishu test-list-records --filter-json '{"conditions":[{"field_name":"发射日期时间","operator":"is","value":["ExactDate","1743443160000"]}],"conjunction":"and"}'
 ```
+每日运行测试:
+```bash
+rocketlaunch-feishu run-daily-sync-flow
+```
 ## 测试
 
 ```bash
