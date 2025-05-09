@@ -202,12 +202,14 @@ services:
 ```
 然后启动服务：
 ```bash
-docker-compose up -d
+docker compose up -d
 ```
 **注意**: 使用 Docker 进行定时任务的最佳实践通常是将 Docker 容器设计为执行一次任务然后退出，然后由宿主机的 cron 或 Kubernetes CronJob 等外部调度器来定时运行 `docker run your-image your-command` 或 `docker-compose run your-service your-command`。
+在宿主机上设置 cron 任务
 ```bash
+crontab -e
 # 每周一凌晨 3:00 执行
-0 3 * * 1 docker exec rocketlaunch_feishu_service rocketlaunch-feishu run-daily-sync-flow --all-pages --execute-pre-check >> /path/to/host/logs/rocket_sync.log 2>&1
+0 3 * * 1 docker exec rocketlaunch_feishu_service rocketlaunch-feishu run-daily-sync-flow >> /path/to/host/logs/rocket_sync.log 2>&1
 ```
 
 ## 🧪 测试
