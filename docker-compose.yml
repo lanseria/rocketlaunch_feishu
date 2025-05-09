@@ -2,7 +2,7 @@ services:
   rocketlaunch_feishu:
     env_file:
       - .env.prod
-    image: rocketlaunch_feishu:latest
+    image: rocketlaunch-feishu:latest
     container_name: rocketlaunch_feishu_service # 改个名，以区分任务执行
     # network_mode: "host" # 考虑是否真的需要 host 模式
     environment:
@@ -12,4 +12,4 @@ services:
       - ./logs:/app/logs
     restart: unless-stopped
     init: true
-    # command: ["tail", "-f", "/dev/null"] # 如果 Dockerfile 中没有 CMD
+    command: ["tail", "-f", "/dev/null"] # 如果 Dockerfile 中没有 CMD
