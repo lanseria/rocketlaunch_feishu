@@ -23,3 +23,5 @@ RUN pip install --upgrade pip
 
 # 安装项目依赖（推荐使用 PEP 517/518 标准，支持 pyproject.toml）
 RUN pip install -e .
+
+ENTRYPOINT ["rocketlaunch-feishu", "start-scheduler"]

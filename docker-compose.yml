@@ -11,5 +11,3 @@ services:
       - ./data:/app/data
       - ./logs:/app/logs
     restart: unless-stopped
-    init: true
-    command: ["tail", "-f", "/dev/null"] # 如果 Dockerfile 中没有 CMD

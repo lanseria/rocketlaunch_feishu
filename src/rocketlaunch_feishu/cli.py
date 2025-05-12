@@ -7,6 +7,7 @@ import httpx
 import re  # Required for regular expressions
 from .html_parser import parse_launches_nextspaceflight # Only import nextspaceflight parser
 import json
+import schedule # New import
 # Removed: timedelta (if not used elsewhere)
 from datetime import datetime 
 import time
@@ -379,7 +380,7 @@ def execute_feishu_sync(
                         # Only need to know if any record exists, so page_size 1 is fine.
                         # We only need record_id or any field to confirm existence.
                         existing_check_response = helper.list_records(
-                            filter=check_filter, 
+                            filter=check_filter,
                             field_names=None, # Requesting minimal field
                             page_size=1
                         )
@@ -613,6 +614,79 @@ def run_daily_sync_flow(
         logger.error(f"Execute Feishu sync step failed: {e}\n{traceback.format_exc()}")
 
     logger.info(f"--- Daily Sync Flow for Source: {source_to_sync.value} Finished ---")
+
+
+@app.command()
+def start_scheduler( # New command to run the internal scheduler
+    schedule_type: str = typer.Option("weekly", help="Type of schedule ('daily' or 'weekly')."),
+    # Weekly params
+    weekday: int = typer.Option(0, help="Weekly: Day of week (0=Mon..6=Sun)."), # Default Monday
+    # Daily/Weekly time params
+    hour: int = typer.Option(3, help="Hour to run (0-23)."), # Default 3 AM
+    minute: int = typer.Option(0, help="Minute to run (0-59)."), # Default 00
+    # Parameters for run_daily_sync_flow
+    fetch_all_pages: bool = typer.Option(False, help="Fetch all pages."),
+    max_pages_nsf: int = typer.Option(236, help="Max pages for NextSpaceflight."),
+    execute_delay: float = typer.Option(0.3, help="Delay between Feishu adds."),
+    execute_pre_check: bool = typer.Option(True, help="Enable Feishu pre-add check.")
+):
+    """
+    Starts an internal scheduler to run the sync flow daily or weekly.
+    WARNING: Less robust than system cron. Best for simple use cases or testing.
+    """
+    logger.info(f"--- Internal Scheduler ({schedule_type.upper()}) Started ---")
+    
+    job_args = {
+        "fetch_all_pages": fetch_all_pages,
+        "max_pages_nsf": max_pages_nsf,
+        "execute_delay": execute_delay,
+        "execute_pre_check": execute_pre_check,
+    }
+
+    # Define the job function with current arguments
+    def job():
+        logger.info(f"Scheduler: Triggering run_daily_sync_flow at {datetime.now()}")
+        try:
+            run_daily_sync_flow(**job_args) # Pass parameters
+            logger.info("Scheduler: run_daily_sync_flow completed successfully.")
+        except typer.Exit as te:
+            if te.exit_code == 0: logger.info("Scheduler: run_daily_sync_flow exited cleanly.")
+            else: logger.error(f"Scheduler: run_daily_sync_flow exited with code {te.exit_code}.")
+        except Exception as e:
+            logger.error(f"Scheduler: Error during scheduled run_daily_sync_flow: {e}")
+            logger.error(traceback.format_exc())
+
+    time_str = f"{hour:02d}:{minute:02d}"
+
+    if schedule_type.lower() == "daily":
+        schedule.every().day.at(time_str, tz=ZoneInfo(os.getenv("TZ", "Asia/Shanghai"))).do(job)
+        logger.info(f"Scheduled to run daily at {time_str} (TZ: {os.getenv('TZ', 'Asia/Shanghai')}).")
+    elif schedule_type.lower() == "weekly":
+        days = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+        if not (0 <= weekday <= 6):
+            logger.error("Invalid weekday. Must be 0 (Monday) to 6 (Sunday).")
+            raise typer.Exit(1)
+        
+        day_to_schedule = days[weekday]
+        
+        if day_to_schedule == "monday": schedule.every().monday.at(time_str, tz=ZoneInfo(os.getenv("TZ", "Asia/Shanghai"))).do(job)
+        elif day_to_schedule == "tuesday": schedule.every().tuesday.at(time_str, tz=ZoneInfo(os.getenv("TZ", "Asia/Shanghai"))).do(job)
+        # ... add all other days
+        elif day_to_schedule == "sunday": schedule.every().sunday.at(time_str, tz=ZoneInfo(os.getenv("TZ", "Asia/Shanghai"))).do(job)
+        logger.info(f"Scheduled to run every {day_to_schedule.capitalize()} at {time_str} (TZ: {os.getenv('TZ', 'Asia/Shanghai')}).")
+    else:
+        logger.error(f"Unsupported schedule_type: {schedule_type}. Use 'daily' or 'weekly'.")
+        raise typer.Exit(1)
+
+    logger.info("Scheduler is running. Press Ctrl+C to exit.")
+    try:
+        while True:
+            schedule.run_pending()
+            time.sleep(1) # Check every second
+    except KeyboardInterrupt:
+        logger.info("Scheduler stopped by user.")
+    finally:
+        schedule.clear()
 
 @app.command()
 def hello(name: Optional[str] = typer.Argument(None)):
