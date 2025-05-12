@@ -656,11 +656,15 @@ def start_scheduler( # New command to run the internal scheduler
             logger.error(f"Scheduler: Error during scheduled run_daily_sync_flow: {e}")
             logger.error(traceback.format_exc())
 
+
     time_str = f"{hour:02d}:{minute:02d}"
+    # Get the timezone string from environment or default
+    tz_str = os.getenv("TZ", "Asia/Shanghai") # Ensure TZ env var is set correctly
+    logger.info(f"Using timezone string for scheduler: {tz_str}")
 
     if schedule_type.lower() == "daily":
-        schedule.every().day.at(time_str, tz=ZoneInfo(os.getenv("TZ", "Asia/Shanghai"))).do(job)
-        logger.info(f"Scheduled to run daily at {time_str} (TZ: {os.getenv('TZ', 'Asia/Shanghai')}).")
+        schedule.every().day.at(time_str, tz=tz_str).do(job) # <--- Pass tz_str
+        logger.info(f"Scheduled to run daily at {time_str} (TZ: {tz_str}).")
     elif schedule_type.lower() == "weekly":
         days = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
         if not (0 <= weekday <= 6):
@@ -669,11 +673,10 @@ def start_scheduler( # New command to run the internal scheduler
         
         day_to_schedule = days[weekday]
         
-        if day_to_schedule == "monday": schedule.every().monday.at(time_str, tz=ZoneInfo(os.getenv("TZ", "Asia/Shanghai"))).do(job)
-        elif day_to_schedule == "tuesday": schedule.every().tuesday.at(time_str, tz=ZoneInfo(os.getenv("TZ", "Asia/Shanghai"))).do(job)
-        # ... add all other days
-        elif day_to_schedule == "sunday": schedule.every().sunday.at(time_str, tz=ZoneInfo(os.getenv("TZ", "Asia/Shanghai"))).do(job)
-        logger.info(f"Scheduled to run every {day_to_schedule.capitalize()} at {time_str} (TZ: {os.getenv('TZ', 'Asia/Shanghai')}).")
+        scheduler_method = getattr(schedule.every(), day_to_schedule)
+        scheduler_method.at(time_str, tz=tz_str).do(job) # <--- Pass tz_str
+        
+        logger.info(f"Scheduled to run every {day_to_schedule.capitalize()} at {time_str} (TZ: {tz_str}).")
     else:
         logger.error(f"Unsupported schedule_type: {schedule_type}. Use 'daily' or 'weekly'.")
         raise typer.Exit(1)

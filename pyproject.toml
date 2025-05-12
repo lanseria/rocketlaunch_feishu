@@ -33,6 +33,7 @@ dependencies = [
   "pytest>=7.0.0", # 确保 pytest 是开发依赖或测试依赖
   "httpx>=0.25.0", # 您代码中用到了 httpx，但没在依赖中
   "zoneinfo; python_version < '3.9'", # 条件依赖 zoneinfo for Python < 3.9
+  "pytz>=2025.2", # 添加 pytz"
 ]
 
 # build = [  # 'build' 字段在 [project]下通常用于指定构建时的依赖，pyinstaller 更像是打包工具
