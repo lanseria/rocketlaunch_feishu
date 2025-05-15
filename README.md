@@ -181,36 +181,13 @@ rocketlaunch-feishu test-list-records --fields-json "[\"发射任务名称\", \"
 
 (您需要一个 `docker-compose.yml` 文件来定义服务)
 一个简单的 `docker-compose.yml` 示例，用于每日运行同步任务：
-```yaml
-version: '3.8'
-services:
-    rocket-sync:
-    image: rocketlaunch-feishu:latest
-    container_name: rocketlaunch-feishu-sync
-    env_file:
-        - .env.prod
-    volumes:
-        - ./data:/app/data  # 持久化数据 (HTML, JSON, logs)
-        - ./logs:/app/logs
-    # 使用 command 来覆盖 Dockerfile 中的 CMD，并设置定时执行
-    # 注意: Docker 容器内通常没有 cron 服务。
-    # 更推荐的做法是使用外部 cron 调用 docker run，或者使用专门的 Docker 任务调度器。
-    # 以下 command 仅为示例，表示容器启动后执行一次同步。
-    command: ["run-daily-sync-flow", "--all-pages", "--execute-pre-check"]
-    # 如果希望容器保持运行并内部调度，需要更复杂的入口点脚本或基础镜像。
-    # restart: unless-stopped # 根据需要设置重启策略
-```
 然后启动服务：
 ```bash
 docker compose up -d
 ```
 **注意**: 使用 Docker 进行定时任务的最佳实践通常是将 Docker 容器设计为执行一次任务然后退出，然后由宿主机的 cron 或 Kubernetes CronJob 等外部调度器来定时运行 `docker run your-image your-command` 或 `docker-compose run your-service your-command`。
 在宿主机上设置 cron 任务
-```bash
-crontab -e
-# 每周一凌晨 3:00 执行
-0 3 * * 1 docker exec rocketlaunch_feishu_service rocketlaunch-feishu run-daily-sync-flow >> /path/to/host/logs/rocket_sync.log 2>&1
-```
+
 
 ## 🧪 测试
 
