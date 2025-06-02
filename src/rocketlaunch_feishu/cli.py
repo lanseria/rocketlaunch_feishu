@@ -641,11 +641,11 @@ def run_daily_sync_flow(
 
 @app.command()
 def start_scheduler( # New command to run the internal scheduler
-    schedule_type: str = typer.Option("weekly", help="Type of schedule ('daily' or 'weekly')."),
+    schedule_type: str = typer.Option("daily", help="Type of schedule ('daily' or 'weekly')."),
     # Weekly params
     weekday: int = typer.Option(0, help="Weekly: Day of week (0=Mon..6=Sun)."), # Default Monday
     # Daily/Weekly time params
-    hour: int = typer.Option(3, help="Hour to run (0-23)."), # Default 3 AM
+    hour: int = typer.Option(6, help="Hour to run (0-23)."), # Default 3 AM
     minute: int = typer.Option(0, help="Minute to run (0-59)."), # Default 00
     # Parameters for run_daily_sync_flow
     fetch_all_pages: bool = typer.Option(False, help="Fetch all pages."),
