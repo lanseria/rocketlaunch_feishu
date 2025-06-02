@@ -44,12 +44,11 @@ class FeishuBitableHelper:
         from lark_oapi.api.bitable.v1 import SearchAppTableRecordRequest, SearchAppTableRecordRequestBody, Sort, FilterInfo, Condition
 
         request_body_builder = SearchAppTableRecordRequestBody.builder()
-
         if self.view_id:
             request_body_builder = request_body_builder.view_id(self.view_id)
 
         if field_names: # field_names is now a list of strings
-            request_body_builder = request_body_builder.field_names(json.dumps(field_names)) # SDK expects JSON string here
+            request_body_builder = request_body_builder.field_names(field_names) # SDK expects JSON string here
 
         if sort:
             sort_list = []
@@ -62,6 +61,7 @@ class FeishuBitableHelper:
             request_body_builder = request_body_builder.sort(sort_list)
         
         if filter:
+            print(f"Filter conditions: {filter.get('conditions', [])}") # Debug print
             conditions = []
             for f_cond in filter.get("conditions", []): # Renamed f to f_cond
                 condition = Condition.builder() \
@@ -77,6 +77,7 @@ class FeishuBitableHelper:
                 .build()
             request_body_builder = request_body_builder.filter(filter_info)
 
+        # print(request_body_builder.build().__dict__)
         request_body = request_body_builder.automatic_fields(False).build()
         
         all_records = []

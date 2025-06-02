@@ -253,7 +253,7 @@ def prepare_feishu_sync(
         filter_for_feishu = {"conditions": [], "conjunction": "and"} # ... (same)
         filter_for_feishu["conditions"].append({"field_name": "Source", "operator": "is", "value": [source_value_from_file]})
         if actual_timestamps_ms: # ... (same)
-            filter_for_feishu["conditions"].append({"field_name": "发射日期时间", "operator": "isGreaterOrEqual", "value": ["ExactDate", str(oldest_timestamp_ms_in_scrape)]})
+            filter_for_feishu["conditions"].append({"field_name": "发射日期时间", "operator": "isGreater", "value": ["ExactDate", str(oldest_timestamp_ms_in_scrape)]})
         else: logger.info("No actual timestamps found; Feishu query will not filter by date.")
 
         helper = FeishuBitableHelper() # ... (same)
@@ -261,15 +261,38 @@ def prepare_feishu_sync(
         bitable_records_response = helper.list_records(filter=filter_for_feishu, field_names=fields_to_fetch, page_size=500)
         
         existing_records_tuples = set() # ... (same logic) ...
-        if bitable_records_response and bitable_records_response.items:
-            for record in bitable_records_response.items:
-                ts_millis_from_feishu = record.fields.get("发射日期时间"); rec_source_field = record.fields.get("Source"); rec_mission = record.fields.get("发射任务名称", "")
-                rec_source_val = "Unknown"; Z = isinstance
-                if Z(rec_source_field, str): rec_source_val = rec_source_field
-                elif Z(rec_source_field, list) and rec_source_field: rec_source_val = rec_source_field[0]
-                existing_records_tuples.add((ts_millis_from_feishu if ts_millis_from_feishu is not None else 0, rec_source_val, rec_mission.strip().lower()))
+        # print((bitable_records_response))
+        if bitable_records_response:
+            for record in bitable_records_response:
+                print(record)
+                fields = record["fields"]  # 确保用字典访问
+
+                # 处理 发射日期时间（可能为 None）
+                ts_millis_from_feishu = fields.get("发射日期时间", 0) or 0
+
+                # 处理 Source（可能是 str 或 list）
+                rec_source_field = fields.get("Source", "Unknown")
+                rec_source_val = "Unknown"
+                if isinstance(rec_source_field, str):
+                    rec_source_val = rec_source_field
+                elif isinstance(rec_source_field, list) and rec_source_field:
+                    rec_source_val = rec_source_field[0]
+
+                # 处理 发射任务名称（可能是富文本列表）
+                rec_mission = fields.get("发射任务名称", "")
+                if isinstance(rec_mission, list) and rec_mission and isinstance(rec_mission[0], dict):
+                    rec_mission = rec_mission[0].get("text", "")
+                elif not isinstance(rec_mission, str):
+                    rec_mission = str(rec_mission)
+
+                existing_records_tuples.add((
+                    ts_millis_from_feishu,
+                    rec_source_val,
+                    rec_mission.strip().lower()
+                ))
             logger.info(f"Found {len(existing_records_tuples)} existing records in Feishu matching criteria.")
-        else: logger.info("No existing records found in Feishu matching criteria or failed to fetch.")
+        else:
+            logger.info("No existing records found in Feishu matching criteria or failed to fetch.")
             
         new_launches_to_add_to_feishu = [] # ... (same logic) ...
         for launch_item in valid_launches_for_sync:
