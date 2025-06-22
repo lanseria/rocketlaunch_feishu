@@ -5,7 +5,7 @@ ENV LANG=C.UTF-8 \
     TZ=Asia/Shanghai
 
 # 安装 tzdata 并设置时区
-RUN apt-get update && apt-get install -y tzdata && \
+RUN apt-get update && apt-get install -y tzdata ca-certificates && \
     ln -fs /usr/share/zoneinfo/${TZ} /etc/localtime && \
     dpkg-reconfigure -f noninteractive tzdata && \
     rm -rf /var/lib/apt/lists/*
