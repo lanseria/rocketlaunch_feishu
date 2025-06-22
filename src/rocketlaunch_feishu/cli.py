@@ -77,62 +77,97 @@ os.makedirs("data/html", exist_ok=True)
 os.makedirs("data/raw", exist_ok=True)
 
 def download_html_for_source(
-    # source: LaunchSource, # No longer needed as param if only one source
     all_pages: bool = False,
     max_pages_nextspaceflight: int = 236 
 ) -> str:
-    source_value = LaunchSource.NEXTSPACEFLIGHT.value # Hardcode or get from Enum
+    source_value = LaunchSource.NEXTSPACEFLIGHT.value
     output_dir = "data/html"
-    # os.makedirs(output_dir, exist_ok=True) # Already done globally
     safe_source_name = "".join(c if c.isalnum() else "_" for c in source_value)
     all_pages_suffix = "_all_pages" if all_pages else ""
     raw_html_output_file = f"{output_dir}/{safe_source_name}_latest_downloaded{all_pages_suffix}.html"
 
     combined_html_content = ""
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36", # 更新到一个更现代的User-Agent
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+        "Accept-Language": "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7",
+        "Cache-Control": "max-age=0",
     }
+    
+    # --- 开始修改 ---
+    max_retries = 3
+    retry_delay_seconds = 5
+    
     try:
-        with httpx.Client(timeout=60.0, follow_redirects=True) as client: # Increased timeout slightly
+        # 调整 httpx.Client 的配置，禁用 HTTP/2 可能会解决一些服务器兼容性问题
+        with httpx.Client(timeout=60.0, follow_redirects=True, http2=False) as client:
             # Logic for NEXTSPACEFLIGHT only
             base_url = "https://nextspaceflight.com/launches/past/"
             if not all_pages:
-                logger.info(f"Downloading data from {base_url} (page 1) for source {source_value}...")
-                response = client.get(base_url, headers=headers)
-                response.raise_for_status()
-                combined_html_content = response.text
+                for attempt in range(max_retries):
+                    try:
+                        logger.info(f"Downloading data from {base_url} (page 1) for source {source_value}... Attempt {attempt + 1}/{max_retries}")
+                        response = client.get(base_url, headers=headers)
+                        response.raise_for_status()
+                        combined_html_content = response.text
+                        break # 成功则跳出循环
+                    except (httpx.ConnectError, httpx.ReadTimeout) as e:
+                        logger.warning(f"Attempt {attempt + 1} failed with connection error: {e}. Retrying in {retry_delay_seconds} seconds...")
+                        if attempt + 1 == max_retries:
+                            raise # 如果是最后一次尝试，则抛出异常
+                        time.sleep(retry_delay_seconds)
             else:
+                # ... (抓取所有页面的逻辑也应该在每个页面请求处加入类似的重试) ...
                 logger.info(f"Downloading all pages from {base_url} for source {source_value}...")
                 all_launch_cards_html = []
                 for page_num in range(1, max_pages_nextspaceflight + 1):
                     page_url = f"{base_url}?page={page_num}&search="
-                    logger.info(f"Downloading page {page_num}/{max_pages_nextspaceflight}: {page_url}")
-                    if page_num > 1: time.sleep(1.5) # Slightly increased delay for politeness
-                    response = client.get(page_url, headers=headers)
-                    response.raise_for_status()
-                    page_content = response.text
-                    soup = BeautifulSoup(page_content, 'html.parser')
                     
-                    # More robust check for end of results
-                    if soup.find(text=re.compile(r"No\s+more\s+results!", re.IGNORECASE)):
-                        logger.info(f"No more results found at page {page_num}. Stopping.")
-                        break
-                    
-                    # Refined selector from html_parser
-                    current_page_cards = soup.find_all('div', class_=lambda x: x and 'launch' in x.split() and 'mdl-card' in x.split() and 'mdl-cell' not in x.split())
+                    # 为每一页的下载添加重试逻辑
+                    for attempt in range(max_retries):
+                        try:
+                            logger.info(f"Downloading page {page_num}/{max_pages_nextspaceflight} (Attempt {attempt + 1}/{max_retries}): {page_url}")
+                            if page_num > 1 or attempt > 0: time.sleep(1.5)
+                            response = client.get(page_url, headers=headers)
+                            response.raise_for_status()
+                            page_content = response.text
+                            # 成功后处理页面内容
+                            soup = BeautifulSoup(page_content, 'html.parser')
+                            if soup.find(text=re.compile(r"No\s+more\s+results!", re.IGNORECASE)):
+                                logger.info(f"No more results found at page {page_num}. Stopping.")
+                                # 使用 goto 语法是困难的，这里我们用一个标志位
+                                page_num = max_pages_nextspaceflight + 1 # 跳出外层循环
+                                break
+                            
+                            current_page_cards = soup.find_all('div', class_=lambda x: x and 'launch' in x.split() and 'mdl-card' in x.split() and 'mdl-cell' not in x.split())
 
-                    if not current_page_cards and page_num > 1 : # If not first page and no cards, likely end
-                        logger.info(f"No launch cards found on page {page_num} (and no 'No more results' text). Assuming end of data.")
+                            if not current_page_cards and page_num > 1 :
+                                logger.info(f"No launch cards found on page {page_num}. Assuming end of data.")
+                                page_num = max_pages_nextspaceflight + 1 # 跳出外层循环
+                                break
+                            
+                            for card_div in current_page_cards:
+                                all_launch_cards_html.append(str(card_div))
+                            
+                            if page_num == max_pages_nextspaceflight:
+                                logger.warning(f"Reached max_pages limit ({max_pages_nextspaceflight}) for NextSpaceflight.")
+                            
+                            break # 当前页面成功，跳出重试循环
+                        
+                        except (httpx.ConnectError, httpx.ReadTimeout) as e:
+                            logger.warning(f"Downloading page {page_num} (Attempt {attempt + 1}) failed: {e}. Retrying...")
+                            if attempt + 1 == max_retries:
+                                logger.error(f"Failed to download page {page_num} after {max_retries} attempts.")
+                                raise # 连续失败则抛出异常
+                            time.sleep(retry_delay_seconds)
+                    
+                    if page_num > max_pages_nextspaceflight: # 检查是否需要提前终止
                         break
-                    for card_div in current_page_cards:
-                        all_launch_cards_html.append(str(card_div))
-                    if page_num == max_pages_nextspaceflight:
-                        logger.warning(f"Reached max_pages limit ({max_pages_nextspaceflight}) for NextSpaceflight.")
+
                 if all_launch_cards_html:
                     combined_html_content = f"<html><head><meta charset='utf-8'></head><body><div class='mdl-grid'>{''.join(all_launch_cards_html)}</div></body></html>"
                 else:
                     combined_html_content = "<html><body></body></html>"
-            # Removed ROCKETLAUNCH_LIVE branch
 
         with open(raw_html_output_file, "w", encoding="utf-8") as f:
             f.write(combined_html_content)
@@ -145,16 +180,6 @@ def download_html_for_source(
         logger.error(f"Download failed for {source_value}: {str(e)}")
         logger.error(traceback.format_exc())
         raise typer.Exit(code=1)
-
-def generate_file_hash(filepath):
-    """Generates a SHA256 hash for a file."""
-    hasher = hashlib.sha256()
-    with open(filepath, 'rb') as f:
-        buf = f.read(65536)  # Read in 64k chunks
-        while len(buf) > 0:
-            hasher.update(buf)
-            buf = f.read(65536)
-    return hasher.hexdigest()
 
 @app.command()
 def fetch_data(
