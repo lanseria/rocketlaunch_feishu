@@ -181,6 +181,17 @@ def download_html_for_source(
         logger.error(traceback.format_exc())
         raise typer.Exit(code=1)
 
+
+def generate_file_hash(filepath):
+    """Generates a SHA256 hash for a file."""
+    hasher = hashlib.sha256()
+    with open(filepath, 'rb') as f:
+        buf = f.read(65536)  # Read in 64k chunks
+        while len(buf) > 0:
+            hasher.update(buf)
+            buf = f.read(65536)
+    return hasher.hexdigest()
+
 @app.command()
 def fetch_data(
     # source: LaunchSource = typer.Option(..., help="The data source to fetch from."), # No longer needed if only one source
