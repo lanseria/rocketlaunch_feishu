@@ -54,4 +54,8 @@ rocketlaunch-feishu = "rocketlaunch_feishu.main:app" # 脚本名可以更具描�
 addopts = "-ra -q --color=yes" # 添加 --color=yes
 testpaths = ["tests"]
 python_files = ["test_*.py"]
-pythonpath = ["src"]  # <--- 关键改动在这里
+pythonpath = ["src"]
+
+[tool.hatch.build.targets.wheel]
+# 告诉 hatchling，你的包位于 "src" 目录下的 "rocketlaunch_feishu" 目录
+packages = ["src/rocketlaunch_feishu"]
